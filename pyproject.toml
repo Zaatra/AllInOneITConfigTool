@@ -1,0 +1,16 @@
+[project]
+name = "trustpalestine"
+version = "0.1.0"
+description = "Python port of the Trust Palestine IT Configuration Tool"
+requires-python = ">=3.11"
+dependencies = [
+    "PySide6>=6.6",
+    "pywin32>=306; platform_system == 'Windows'",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4"]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
