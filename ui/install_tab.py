@@ -1,6 +1,7 @@
 """Installation tab with selectable applications and async actions."""
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -62,6 +63,11 @@ class InstallTab(QWidget):
         self._installed_map: dict[str, InstalledInfo] = {}
         self._row_by_name: dict[str, int] = {}
         self._busy = False
+        self._action_label = ""
+        self._action_current = 0
+        self._action_total = 0
+        self._action_app = ""
+        self._action_started_at: float | None = None
         self._build_ui()
         self._start_installed_scan()
 
@@ -84,11 +90,20 @@ class InstallTab(QWidget):
         button_row.addWidget(self._btn_select_none)
         layout.addLayout(button_row)
 
+        self._action_progress = QProgressBar(self)
+        self._action_progress.setVisible(False)
+        self._action_progress.setTextVisible(True)
+        self._action_progress.setFormat("Working...")
+        layout.addWidget(self._action_progress)
+
         self._update_progress = QProgressBar(self)
         self._update_progress.setVisible(False)
         self._update_progress.setTextVisible(True)
         self._update_progress.setFormat("Checking updates... %p%")
         layout.addWidget(self._update_progress)
+        self._action_timer = QTimer(self)
+        self._action_timer.setInterval(1000)
+        self._action_timer.timeout.connect(self._tick_action_timer)
 
         self._table = QTableWidget(0, 8, self)
         self._table.setHorizontalHeaderLabels(
@@ -182,15 +197,24 @@ class InstallTab(QWidget):
             return
         if not self._ensure_settings_for(action, selection):
             return
+        if action == "install_selected":
+            if not self._confirm_local_version_overrides(selection):
+                return
         if not hasattr(self._service, action):
             QMessageBox.warning(self, "Unsupported", f"Unknown installer action: {action}")
             return
         self._busy = True
         self._set_buttons_enabled(False)
+        action_label = "Downloading" if action == "download_selected" else "Installing"
+        self._begin_action_progress(action_label, len(selection))
         self._log(f"Starting {action.replace('_', ' ')} for {len(selection)} app(s) ...")
         worker = ServiceWorker(getattr(self._service, action), selection)
+        worker.kwargs["progress_callback"] = worker.signals.progress.emit
+        worker.kwargs["status_callback"] = worker.signals.message.emit
         worker.signals.finished.connect(lambda result, action=action: self._handle_results(action, result))
         worker.signals.error.connect(self._handle_error)
+        worker.signals.progress.connect(self._handle_action_progress)
+        worker.signals.message.connect(self._handle_action_message)
         self._thread_pool.start(worker)
 
     def _handle_results(self, action: str, results: Iterable[OperationResult]) -> None:
@@ -199,6 +223,7 @@ class InstallTab(QWidget):
             self._log(f"[{status}] {action} :: {result.app.name} -> {result.message}")
         self._busy = False
         self._set_buttons_enabled(True)
+        self._end_action_progress()
         self._update_progress.setVisible(False)
         if action == "download_selected":
             self._refresh_offline_status()
@@ -209,6 +234,7 @@ class InstallTab(QWidget):
         self._log(f"[ERROR] {message}")
         self._busy = False
         self._set_buttons_enabled(True)
+        self._end_action_progress()
         self._update_progress.setVisible(False)
 
     def _ensure_settings_for(self, action: str, selection: list[str]) -> bool:
@@ -370,6 +396,50 @@ class InstallTab(QWidget):
             self._update_progress.setRange(0, total)
         self._update_progress.setValue(current)
 
+    def _handle_action_progress(self, current: int, total: int, app_name: str) -> None:
+        self._action_current = current
+        self._action_total = total if total > 0 else self._action_total
+        self._action_progress.setRange(0, max(self._action_total, 1))
+        self._action_progress.setValue(current)
+        if not self._action_app:
+            self._action_app = app_name
+        self._update_action_progress_text()
+
+    def _handle_action_message(self, message: str) -> None:
+        self._action_app = message
+        self._update_action_progress_text()
+
+    def _tick_action_timer(self) -> None:
+        if not self._action_progress.isVisible():
+            self._action_timer.stop()
+            return
+        self._update_action_progress_text()
+
+    def _begin_action_progress(self, label: str, total: int) -> None:
+        self._action_label = label
+        self._action_total = max(total, 1)
+        self._action_current = 0
+        self._action_app = ""
+        self._action_started_at = time.monotonic()
+        self._action_progress.setRange(0, self._action_total)
+        self._action_progress.setValue(0)
+        self._action_progress.setVisible(True)
+        self._update_action_progress_text()
+        self._action_timer.start()
+
+    def _end_action_progress(self) -> None:
+        self._action_timer.stop()
+        self._action_progress.setVisible(False)
+        self._action_started_at = None
+
+    def _update_action_progress_text(self) -> None:
+        elapsed = 0
+        if self._action_started_at is not None:
+            elapsed = int(time.monotonic() - self._action_started_at)
+        app_part = f" | {self._action_app}" if self._action_app else ""
+        text = f"{self._action_label} {self._action_current}/{self._action_total}{app_part} | {_format_elapsed(elapsed)}"
+        self._action_progress.setFormat(text)
+
     def _set_item_text(self, row: int, column: int, text: str) -> None:
         item = self._table.item(row, column)
         if item is None:
@@ -405,9 +475,38 @@ class InstallTab(QWidget):
         }
         return palette.get(level)
 
+    def _confirm_local_version_overrides(self, selection: list[str]) -> bool:
+        selected = {name.lower() for name in selection}
+        warnings: list[str] = []
+        for app in self._registry.entries:
+            if app.name.lower() in selected:
+                warnings.extend(self._service.local_version_override_warnings(app))
+        if not warnings:
+            return True
+        message = (
+            "Local installers found that will override selected versions:\n"
+            + "\n".join(f"- {item}" for item in warnings)
+            + "\n\nContinue anyway?"
+        )
+        reply = QMessageBox.warning(
+            self,
+            "Local Installer Override",
+            message,
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        return reply == QMessageBox.Yes
+
 
 def _file_exists(path: str) -> bool:
     if not path:
         return False
     candidate = Path(path)
     return candidate.exists() and candidate.is_file()
+
+
+def _format_elapsed(total_seconds: int) -> str:
+    minutes, seconds = divmod(max(total_seconds, 0), 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"

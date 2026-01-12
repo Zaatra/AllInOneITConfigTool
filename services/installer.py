@@ -399,17 +399,69 @@ class InstallerService:
             path = _pick_best_candidate(candidates)
         return LocalInstallerInfo(bool(path), path=path)
 
-    def install_selected(self, selection: Iterable[str]) -> list[OperationResult]:
+    def install_selected(
+        self,
+        selection: Iterable[str],
+        *,
+        progress_callback: Callable[[int, int, str], None] | None = None,
+        status_callback: Callable[[str], None] | None = None,
+    ) -> list[OperationResult]:
         results: list[OperationResult] = []
-        for app in self._selected_apps(selection):
+        apps = list(self._selected_apps(selection))
+        total = len(apps)
+        for index, app in enumerate(apps, start=1):
+            if status_callback:
+                status_callback(app.name)
             results.append(self._install_app(app))
+            if progress_callback:
+                progress_callback(index, total, app.name)
         return results
 
-    def download_selected(self, selection: Iterable[str]) -> list[OperationResult]:
+    def download_selected(
+        self,
+        selection: Iterable[str],
+        *,
+        progress_callback: Callable[[int, int, str], None] | None = None,
+        status_callback: Callable[[str], None] | None = None,
+    ) -> list[OperationResult]:
         results: list[OperationResult] = []
-        for app in self._selected_apps(selection):
+        apps = list(self._selected_apps(selection))
+        total = len(apps)
+        for index, app in enumerate(apps, start=1):
+            if status_callback:
+                status_callback(app.name)
             results.append(self._download_app(app))
+            if progress_callback:
+                progress_callback(index, total, app.name)
         return results
+
+    def local_version_override_warnings(self, app: AppEntry) -> list[str]:
+        if not app.winget_version or not app.winget_version.strip():
+            return []
+        info = self.get_local_installer_info(app, include_downloads=True)
+        paths: list[Path] = []
+        if app.dual_arch:
+            if info.path_x86:
+                paths.append(info.path_x86)
+            if info.path_x64:
+                paths.append(info.path_x64)
+        else:
+            if info.path:
+                paths.append(info.path)
+        if not paths:
+            return []
+        expected = _normalize_version_string(app.winget_version) or app.winget_version.strip()
+        warnings: list[str] = []
+        for path in paths:
+            actual = _extract_version_from_filename(path.name)
+            actual_normalized = _normalize_version_string(actual) if actual else None
+            if actual_normalized == expected:
+                continue
+            actual_display = actual_normalized or "unknown"
+            warnings.append(
+                f"{app.name}: local installer {path.name} (version {actual_display}) will be used instead of {expected}"
+            )
+        return warnings
 
     def _selected_apps(self, selection: Iterable[str]) -> Iterable[AppEntry]:
         wanted = {name.lower() for name in selection}
