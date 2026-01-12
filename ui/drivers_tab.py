@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from allinone_it_config.paths import get_application_directory
 from allinone_it_config.user_settings import UserSettings
 from services.drivers import DriverOperationResult, DriverRecord, DriverService
 from ui.workers import ServiceWorker
@@ -36,7 +37,7 @@ class DriversTab(QWidget):
         super().__init__()
         self._log = log_callback
         self._thread_pool = thread_pool
-        self._working_dir = working_dir or Path.cwd()
+        self._working_dir = working_dir or get_application_directory()
         self._settings = settings or UserSettings()
         self._refresh_service()
         self._records: list[DriverRecord] = []

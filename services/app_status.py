@@ -10,6 +10,7 @@ from typing import Callable, Iterable, Mapping
 
 from services.installer import HPSADownloader, IVMSDownloader, WingetClient, WingetError
 from allinone_it_config.app_registry import AppEntry
+from allinone_it_config.paths import get_application_directory
 
 try:  # Windows-only dependency, optional for non-Windows hosts
     import winreg  # type: ignore
@@ -67,7 +68,7 @@ class AppStatusService:
         winget_client: WingetClient | None = None,
     ) -> None:
         self._apps = list(apps)
-        self._working_dir = Path(working_dir or Path.cwd())
+        self._working_dir = Path(working_dir) if working_dir is not None else get_application_directory()
         self._winget = winget_client or WingetClient()
         self._direct_downloaders = {"iVMS-4200": IVMSDownloader(), "HP Support Asst": HPSADownloader()}
 

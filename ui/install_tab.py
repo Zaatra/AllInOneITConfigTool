@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 from services.app_status import AppStatusService, AppUpdateResult, InstalledInfo
 from services.installer import InstallerService, OperationResult
 from allinone_it_config.app_registry import AppRegistry, build_registry
+from allinone_it_config.paths import get_application_directory
 from allinone_it_config.user_settings import SettingsStore, UserSettings
 from ui.settings_dialog import SettingsDialog
 from ui.workers import ServiceWorker
@@ -55,7 +56,7 @@ class InstallTab(QWidget):
         self._registry = registry
         self._log = log_callback
         self._thread_pool = thread_pool
-        self._working_dir = working_dir or Path.cwd()
+        self._working_dir = working_dir or get_application_directory()
         self._settings_store = settings_store or SettingsStore()
         self._settings = settings or self._settings_store.load()
         self._service = InstallerService(registry.entries, working_dir=self._working_dir, settings=self._settings)

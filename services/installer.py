@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Mapping, Protocol, Sequence
 
 from allinone_it_config.app_registry import AppEntry
+from allinone_it_config.paths import get_application_directory
 from allinone_it_config.user_settings import UserSettings
 
 
@@ -327,7 +328,7 @@ class InstallerService:
         settings: UserSettings | None = None,
     ) -> None:
         self._apps = list(apps)
-        self._working_dir = Path(working_dir or Path.cwd())
+        self._working_dir = Path(working_dir) if working_dir is not None else get_application_directory()
         self._downloads_dir = self._working_dir / "downloads"
         self._winget = winget_client or WingetClient()
         self._settings = settings or UserSettings()

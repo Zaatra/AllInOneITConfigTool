@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Protocol, Sequence
 
 from allinone_it_config.constants import IMMUTABLE_CONFIG
+from allinone_it_config.paths import get_application_directory
 
 
 @dataclass
@@ -278,7 +279,7 @@ class DriverService:
         command_runner: CommandRunner | None = None,
         system_info_provider: Callable[[], HPSystemInfo] | None = None,
     ) -> None:
-        self._working_dir = Path(working_dir or Path.cwd())
+        self._working_dir = Path(working_dir) if working_dir is not None else get_application_directory()
         self._runner = command_runner or SubprocessRunner()
         self._hpia = hpia_client or HPIAClient(self._working_dir)
         self._cmsl = cmsl_client or CMSLClient()
