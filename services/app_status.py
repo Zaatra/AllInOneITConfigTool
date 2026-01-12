@@ -178,10 +178,15 @@ class AppStatusService:
     def _read_uninstall_entries(self) -> list[_UninstallEntry]:
         if winreg is None:
             return []
-        path = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
-        views = [getattr(winreg, "KEY_WOW64_64KEY", 0), getattr(winreg, "KEY_WOW64_32KEY", 0)]
+        base_path = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
+        wow_path = r"SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+        views = [
+            (getattr(winreg, "KEY_WOW64_64KEY", 0), base_path),
+            (getattr(winreg, "KEY_WOW64_64KEY", 0), wow_path),
+            (getattr(winreg, "KEY_WOW64_32KEY", 0), base_path),
+        ]
         entries: dict[tuple[str, str], _UninstallEntry] = {}
-        for view in views:
+        for view, path in views:
             try:
                 with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, path, 0, winreg.KEY_READ | view) as root:  # type: ignore[arg-type]
                     index = 0
@@ -434,20 +439,19 @@ class AppStatusService:
 
 
 def _normalize_version(value: str | None) -> str | None:
-    if not value:
+    if not value or not value.strip():
         return None
     cleaned = value.strip()
-    if not cleaned:
-        return None
-    match = re.search(r"\d+(?:\.\d+){1,3}", cleaned)
+    if re.match(r"^\d+\.\d+$", cleaned):
+        return f"{cleaned}.0.0"
+    if re.match(r"^\d+\.\d+\.\d+$", cleaned):
+        return f"{cleaned}.0"
+    if re.match(r"^\d+\.\d+\.\d+\.\d+$", cleaned):
+        return cleaned
+    match = re.search(r"(\d+\.\d+(?:\.\d+){0,2})", cleaned)
     if match:
-        cleaned = match.group(0)
-    parts = cleaned.split(".")
-    if not all(part.isdigit() for part in parts):
-        return None
-    while len(parts) < 4:
-        parts.append("0")
-    return ".".join(parts[:4])
+        return _normalize_version(match.group(1))
+    return cleaned
 
 
 def _version_tuple(value: str | None) -> tuple[int, ...] | None:

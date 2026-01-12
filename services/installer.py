@@ -200,6 +200,14 @@ class DirectDownloadInfo:
     filename: str | None = None
 
 
+@dataclass(frozen=True)
+class LocalInstallerInfo:
+    exists: bool
+    path: Path | None = None
+    path_x86: Path | None = None
+    path_x64: Path | None = None
+
+
 class DirectDownloader(Protocol):
     def fetch(self) -> DirectDownloadInfo:
         ...
@@ -275,6 +283,41 @@ class InstallerService:
         if direct_downloaders:
             self._direct_downloaders.update(direct_downloaders)
 
+    def is_downloadable(self, app: AppEntry) -> bool:
+        if app.download_mode in {"localonly", "onlineonly"}:
+            return False
+        if app.download_mode == "direct":
+            return app.name in self._direct_downloaders
+        if app.download_mode == "winget" and app.source and app.source != "winget":
+            return False
+        return True
+
+    def get_local_installer_info(self, app: AppEntry, *, include_downloads: bool = True) -> LocalInstallerInfo:
+        if app.download_mode == "onlineonly":
+            return LocalInstallerInfo(False)
+        if app.download_mode == "office":
+            setup_path = self._working_dir / "setup.exe"
+            return LocalInstallerInfo(setup_path.exists(), path=setup_path if setup_path.exists() else None)
+        search_dirs = [self._working_dir]
+        if include_downloads:
+            search_dirs.append(self._downloads_dir)
+        if app.dual_arch:
+            path_x86 = None
+            path_x64 = None
+            if app.file_stem_x86:
+                patterns = [f"{app.file_stem_x86}_*.exe", f"{app.file_stem_x86}_*.msi"]
+                path_x86 = self._best_local_by_patterns(search_dirs, patterns)
+            if app.file_stem_x64:
+                patterns = [f"{app.file_stem_x64}_*.exe", f"{app.file_stem_x64}_*.msi"]
+                path_x64 = self._best_local_by_patterns(search_dirs, patterns)
+            return LocalInstallerInfo(bool(path_x86 or path_x64), path_x86=path_x86, path_x64=path_x64)
+        patterns: list[str] = []
+        if app.file_stem:
+            patterns.extend([f"{app.file_stem}_*.exe", f"{app.file_stem}_*.msi"])
+        exact_names = tuple(app.local_alt_names) if app.download_mode == "localonly" else ()
+        path = self._best_local_by_patterns(search_dirs, patterns, exact_names)
+        return LocalInstallerInfo(bool(path), path=path)
+
     def install_selected(self, selection: Iterable[str]) -> list[OperationResult]:
         results: list[OperationResult] = []
         for app in self._selected_apps(selection):
@@ -293,8 +336,30 @@ class InstallerService:
             if app.name.lower() in wanted:
                 yield app
 
+    def _install_from_local(self, app: AppEntry, info: LocalInstallerInfo) -> OperationResult:
+        if app.dual_arch:
+            results: list[OperationResult] = []
+            success = True
+            if info.path_x86:
+                results.append(self._run_local_installer(app, info.path_x86))
+            if _is_64bit() and info.path_x64:
+                results.append(self._run_local_installer(app, info.path_x64))
+            if not results:
+                return OperationResult(app, "install", False, "Local installer not found")
+            success = all(result.success for result in results)
+            stdout = "\n".join(result.stdout for result in results if result.stdout)
+            stderr = "\n".join(result.stderr for result in results if result.stderr)
+            message = "Installed from local files" if success else "Local install failed"
+            return OperationResult(app, "install", success, message, stdout, stderr)
+        if info.path:
+            return self._run_local_installer(app, info.path)
+        return OperationResult(app, "install", False, "Local installer not found")
+
     def _install_app(self, app: AppEntry) -> OperationResult:
         if app.download_mode in {"winget", "onlineonly"}:
+            local_info = self.get_local_installer_info(app, include_downloads=True)
+            if local_info.exists:
+                return self._install_from_local(app, local_info)
             return self._install_via_winget(app)
         if app.download_mode == "office":
             try:
@@ -303,19 +368,27 @@ class InstallerService:
             except Exception as exc:
                 return OperationResult(app, "install", False, str(exc))
         if app.download_mode == "direct":
-            path = self._find_local_installer(app, include_downloads=True)
-            if not path:
-                return OperationResult(app, "install", False, "Direct installer missing; download first")
-            return self._run_local_installer(app, path)
+            local_info = self.get_local_installer_info(app, include_downloads=True)
+            if local_info.exists:
+                return self._install_from_local(app, local_info)
+            download_result = self._download_direct(app)
+            if not download_result.success:
+                return OperationResult(app, "install", False, download_result.message, download_result.stdout, download_result.stderr)
+            local_info = self.get_local_installer_info(app, include_downloads=True)
+            if local_info.exists:
+                return self._install_from_local(app, local_info)
+            return OperationResult(app, "install", False, "Downloaded installer missing after download")
         if app.download_mode == "localonly":
-            path = self._find_local_installer(app, include_downloads=False)
-            if not path:
+            local_info = self.get_local_installer_info(app, include_downloads=False)
+            if not local_info.exists:
                 return OperationResult(app, "install", False, "Local installer not found in working directory")
-            return self._run_local_installer(app, path)
+            return self._install_from_local(app, local_info)
         return OperationResult(app, "install", False, f"Download mode {app.download_mode} not implemented")
 
     def _download_app(self, app: AppEntry) -> OperationResult:
-        if app.download_mode in {"winget", "onlineonly"}:
+        if app.download_mode == "onlineonly":
+            return OperationResult(app, "download", True, "Online-only package; offline download not available")
+        if app.download_mode == "winget":
             return self._download_via_winget(app)
         if app.download_mode == "office":
             try:
@@ -357,6 +430,8 @@ class InstallerService:
         return OperationResult(app, "install", success, message, "\n".join(stdout_parts), "\n".join(stderr_parts))
 
     def _download_via_winget(self, app: AppEntry) -> OperationResult:
+        if app.source and app.source != "winget":
+            return OperationResult(app, "download", True, f"Download not supported for source {app.source}")
         package_ids = self._package_ids_for(app)
         if not package_ids:
             return OperationResult(app, "download", False, "No Winget package id configured")
@@ -364,21 +439,66 @@ class InstallerService:
             return OperationResult(app, "download", False, "winget executable not found")
         stdout_parts: list[str] = []
         stderr_parts: list[str] = []
+        messages: list[str] = []
         success = True
         target_root = self._downloads_dir / _safe_name(app.name)
-        for package_id in package_ids:
+        target_root.mkdir(parents=True, exist_ok=True)
+        packages: list[tuple[str, str]] = []
+        if app.dual_arch:
+            if app.winget_id_x86:
+                stem = app.file_stem_x86 or app.file_stem or _safe_name(app.name)
+                packages.append((app.winget_id_x86, stem))
+            if _is_64bit() and app.winget_id_x64:
+                stem = app.file_stem_x64 or app.file_stem or _safe_name(app.name)
+                packages.append((app.winget_id_x64, stem))
+        elif app.winget_id:
+            stem = app.file_stem or _safe_name(app.name)
+            packages.append((app.winget_id, stem))
+        for package_id, stem in packages:
+            version_raw = None
+            try:
+                version_raw = self._winget.show_package_version(package_id, source=app.source)
+            except WingetError as exc:
+                success = False
+                messages.append(f"{stem}: {exc}")
+                continue
+            version = _normalize_version_string(version_raw) or version_raw or "unknown"
+            safe_version = _safe_file_part(version)
+            existing = self._find_existing_versioned_file(target_root, stem, safe_version)
+            if existing:
+                messages.append(f"{stem}: already have {existing.name}")
+                continue
+            temp_dir = target_root / f"temp_{_safe_name(stem)}"
+            shutil.rmtree(temp_dir, ignore_errors=True)
             try:
                 result = self._winget.download_package(
                     package_id,
-                    destination=target_root,
+                    destination=temp_dir,
                     source=app.source,
                 )
             except WingetError as exc:
-                return OperationResult(app, "download", False, str(exc))
+                success = False
+                messages.append(f"{stem}: {exc}")
+                continue
             stdout_parts.append(result.stdout)
             stderr_parts.append(result.stderr)
-            success = success and result.succeeded
-        message = "Downloaded via winget" if success else "winget download failed"
+            installer = self._find_downloaded_installer(temp_dir)
+            if not installer:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                success = False
+                messages.append(f"{stem}: installer not found after download")
+                continue
+            dest_path = target_root / f"{stem}_{safe_version}{installer.suffix.lower()}"
+            try:
+                shutil.move(str(installer), dest_path)
+            except OSError as exc:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                success = False
+                messages.append(f"{stem}: rename failed ({exc})")
+                continue
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            messages.append(f"{stem}: downloaded {dest_path.name}")
+        message = "; ".join(messages) if messages else "No packages downloaded"
         return OperationResult(app, "download", success, message, "\n".join(stdout_parts), "\n".join(stderr_parts))
 
     def _download_direct(self, app: AppEntry) -> OperationResult:
@@ -389,7 +509,9 @@ class InstallerService:
             info = downloader.fetch()
         except Exception as exc:
             return OperationResult(app, "download", False, f"Direct download failed: {exc}")
-        filename = info.filename or f"{_safe_name(app.file_stem or app.name)}_{info.version}.exe"
+        stem = app.file_stem or _safe_name(app.name)
+        version = _safe_file_part(info.version)
+        filename = info.filename or f"{stem}_{version}.exe"
         destination_dir = self._downloads_dir / _safe_name(app.name)
         destination_dir.mkdir(parents=True, exist_ok=True)
         dest_path = destination_dir / filename
@@ -400,6 +522,40 @@ class InstallerService:
         except Exception as exc:
             return OperationResult(app, "download", False, f"Download error: {exc}")
         return OperationResult(app, "download", True, f"Downloaded {dest_path.name}")
+
+    def _best_local_by_patterns(
+        self,
+        search_dirs: Sequence[Path],
+        patterns: Sequence[str],
+        exact_names: Sequence[str] = (),
+    ) -> Path | None:
+        candidates: list[Path] = []
+        for directory in search_dirs:
+            if not directory.exists():
+                continue
+            for pattern in patterns:
+                candidates.extend(directory.glob(pattern))
+            for name in exact_names:
+                candidate = directory / name
+                if candidate.exists():
+                    candidates.append(candidate)
+        return _pick_best_candidate(candidates)
+
+    def _find_existing_versioned_file(self, target_root: Path, stem: str, version: str) -> Path | None:
+        pattern = f"{stem}_{version}.*"
+        for directory in (target_root, self._working_dir):
+            for candidate in directory.glob(pattern):
+                if candidate.suffix.lower() in {".exe", ".msi"}:
+                    return candidate
+        return None
+
+    def _find_downloaded_installer(self, temp_dir: Path) -> Path | None:
+        if not temp_dir.exists():
+            return None
+        for candidate in sorted(temp_dir.rglob("*")):
+            if candidate.is_file() and candidate.suffix.lower() in {".exe", ".msi"}:
+                return candidate
+        return None
 
     def _package_ids_for(self, app: AppEntry) -> list[str]:
         ids: list[str] = []
@@ -412,29 +568,6 @@ class InstallerService:
         if app.winget_id:
             ids.append(app.winget_id)
         return ids
-
-    def _find_local_installer(self, app: AppEntry, *, include_downloads: bool) -> Path | None:
-        search_dirs = [self._working_dir]
-        if include_downloads:
-            search_dirs.append(self._downloads_dir)
-        patterns: list[str] = []
-        if app.file_stem:
-            patterns.extend([f"{app.file_stem}*.exe", f"{app.file_stem}*.msi"])
-        for alt in app.local_alt_names:
-            patterns.append(alt)
-        for directory in search_dirs:
-            if not directory.exists():
-                continue
-            for pattern in patterns:
-                if pattern.endswith(".exe") or pattern.endswith(".msi"):
-                    candidates = list(directory.glob(pattern))
-                    if candidates:
-                        return candidates[0]
-                else:
-                    candidate = directory / pattern
-                    if candidate.exists():
-                        return candidate
-        return None
 
     def _run_local_installer(self, app: AppEntry, path: Path) -> OperationResult:
         cmd = [str(path)]
@@ -451,8 +584,57 @@ class InstallerService:
             destination.write_bytes(response.read())
 
 
-def _version_tuple(version: str) -> tuple[int, ...]:
-    return tuple(int(part) for part in version.split("."))
+def _normalize_version_string(value: str | None) -> str | None:
+    if not value or not value.strip():
+        return None
+    cleaned = value.strip()
+    if re.match(r"^\d+\.\d+$", cleaned):
+        return f"{cleaned}.0.0"
+    if re.match(r"^\d+\.\d+\.\d+$", cleaned):
+        return f"{cleaned}.0"
+    if re.match(r"^\d+\.\d+\.\d+\.\d+$", cleaned):
+        return cleaned
+    match = re.search(r"(\d+\.\d+(?:\.\d+){0,2})", cleaned)
+    if match:
+        return _normalize_version_string(match.group(1))
+    return cleaned
+
+
+def _version_tuple(version: str | None) -> tuple[int, ...]:
+    if not version:
+        return tuple()
+    parts = version.split(".")
+    if not all(part.isdigit() for part in parts):
+        return tuple()
+    return tuple(int(part) for part in parts)
+
+
+def _safe_file_part(value: str) -> str:
+    cleaned = value.strip().replace(" ", "_")
+    cleaned = re.sub(r"[^a-zA-Z0-9._-]", "", cleaned)
+    return cleaned or "unknown"
+
+
+def _extract_version_from_filename(filename: str) -> str | None:
+    match = re.search(r"_([0-9]+(?:\.[0-9]+){1,3})\.(exe|msi)$", filename, re.IGNORECASE)
+    if match:
+        return _normalize_version_string(match.group(1))
+    return None
+
+
+def _pick_best_candidate(files: Sequence[Path]) -> Path | None:
+    best: Path | None = None
+    best_version: tuple[int, ...] | None = None
+    for candidate in sorted({file for file in files}, key=lambda p: p.name.lower()):
+        version_token = _extract_version_from_filename(candidate.name)
+        version_tuple = _version_tuple(version_token) if version_token else tuple()
+        if version_tuple:
+            if best_version is None or version_tuple > best_version:
+                best_version = version_tuple
+                best = candidate
+        elif best is None:
+            best = candidate
+    return best
 
 
 def _safe_name(name: str) -> str:

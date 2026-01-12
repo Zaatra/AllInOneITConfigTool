@@ -32,8 +32,12 @@ class DummyWingetClient(WingetClient):
 
     def download_package(self, package_id: str, destination: Path, *, source: str | None = None, force: bool = True) -> CommandExecutionResult:  # type: ignore[override]
         destination.mkdir(parents=True, exist_ok=True)
+        (destination / "installer.exe").write_text("fake")
         self.downloads.append((package_id, destination))
         return CommandExecutionResult(["winget", "download", package_id], 0, "ok", "")
+
+    def show_package_version(self, package_id: str, *, source: str | None = None) -> str | None:  # type: ignore[override]
+        return "1.2.3.4"
 
 
 class DummyOfficeInstaller:
@@ -97,7 +101,8 @@ def test_download_via_winget_uses_client(chrome_entry: AppEntry, tmp_path: Path)
     results = service.download_selected(["Chrome"])
     assert results[0].success
     assert fake_client.downloads[0][0] == "Google.Chrome"
-    assert fake_client.downloads[0][1].exists()
+    downloaded = list((tmp_path / "downloads").rglob("chrome_1.2.3.4.exe"))
+    assert downloaded, "Expected renamed installer in downloads"
 
 
 def test_office_install_delegates_to_office_installer(office_entry: AppEntry) -> None:

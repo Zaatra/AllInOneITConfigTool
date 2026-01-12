@@ -34,7 +34,8 @@ class InstallTab(QWidget):
     COL_INSTALLED = 3
     COL_LATEST = 4
     COL_STATUS = 5
-    COL_MODE = 6
+    COL_OFFLINE = 6
+    COL_MODE = 7
 
     def __init__(
         self,
@@ -61,7 +62,7 @@ class InstallTab(QWidget):
         layout = QVBoxLayout(self)
 
         button_row = QHBoxLayout()
-        self._btn_download = QPushButton("Download Selected")
+        self._btn_download = QPushButton("Download Offline")
         self._btn_install = QPushButton("Install Selected")
         self._btn_check_updates = QPushButton("Check for Updates")
         self._btn_select_all = QPushButton("Select All")
@@ -80,20 +81,21 @@ class InstallTab(QWidget):
         self._update_progress.setFormat("Checking updates... %p%")
         layout.addWidget(self._update_progress)
 
-        self._table = QTableWidget(len(self._registry.entries), 7, self)
+        self._table = QTableWidget(len(self._registry.entries), 8, self)
         self._table.setHorizontalHeaderLabels(
-            ["Select", "Category", "Application", "Installed", "Latest", "Status", "Mode"]
+            ["Select", "Category", "Application", "Installed", "Latest", "Status", "Offline", "Mode"]
         )
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._table.verticalHeader().setVisible(False)
         header = self._table.horizontalHeader()
-        header.setStretchLastSection(True)
+        header.setStretchLastSection(False)
         header.setSectionResizeMode(self.COL_SELECT, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(self.COL_CATEGORY, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(self.COL_APP, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(self.COL_INSTALLED, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(self.COL_LATEST, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(self.COL_INSTALLED, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(self.COL_LATEST, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(self.COL_STATUS, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(self.COL_OFFLINE, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(self.COL_MODE, QHeaderView.ResizeMode.ResizeToContents)
         layout.addWidget(self._table)
 
@@ -109,6 +111,7 @@ class InstallTab(QWidget):
             self._table.setItem(row, self.COL_INSTALLED, QTableWidgetItem("Scanning..."))
             self._table.setItem(row, self.COL_LATEST, QTableWidgetItem(""))
             self._table.setItem(row, self.COL_STATUS, QTableWidgetItem("Pending"))
+            self._table.setItem(row, self.COL_OFFLINE, QTableWidgetItem("Checking..."))
             self._table.setItem(row, self.COL_MODE, QTableWidgetItem(app.download_mode))
             self._row_by_name[app.name] = row
 
@@ -117,6 +120,7 @@ class InstallTab(QWidget):
         self._btn_check_updates.clicked.connect(self._start_update_check)
         self._btn_select_all.clicked.connect(self._select_all)
         self._btn_select_none.clicked.connect(self._select_none)
+        self._refresh_offline_status()
 
     def _select_all(self) -> None:
         for row in range(self._table.rowCount()):
@@ -156,6 +160,8 @@ class InstallTab(QWidget):
         self._busy = False
         self._set_buttons_enabled(True)
         self._update_progress.setVisible(False)
+        if action == "download_selected":
+            self._refresh_offline_status()
         if action == "install_selected":
             self._start_installed_scan()
 
@@ -209,6 +215,20 @@ class InstallTab(QWidget):
             self._apply_status_color(row, level)
         self._busy = False
         self._set_buttons_enabled(True)
+
+    def _refresh_offline_status(self) -> None:
+        for app in self._registry.entries:
+            row = self._row_by_name.get(app.name)
+            if row is None:
+                continue
+            local_info = self._service.get_local_installer_info(app, include_downloads=True)
+            if local_info.exists:
+                text = "Ready"
+            elif self._service.is_downloadable(app):
+                text = "Downloadable"
+            else:
+                text = "Not Downloadable"
+            self._set_item_text(row, self.COL_OFFLINE, text)
 
     def _start_update_check(self) -> None:
         if self._busy:
