@@ -120,4 +120,3 @@ class SystemTab(QWidget):
         self._log(f"[ERROR] {message}")
         self._busy = False
         self._btn_apply.setEnabled(True)
-*** End File

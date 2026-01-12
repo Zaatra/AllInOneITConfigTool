@@ -165,4 +165,3 @@ class DriversTab(QWidget):
         self._log(f"[ERROR] {message}")
         self._busy = False
         self._set_buttons_enabled(True)
-*** End File

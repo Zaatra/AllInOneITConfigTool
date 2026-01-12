@@ -139,4 +139,3 @@ class InstallTab(QWidget):
     def _set_buttons_enabled(self, enabled: bool) -> None:
         for button in (self._btn_download, self._btn_install, self._btn_select_all, self._btn_select_none):
             button.setEnabled(enabled)
-*** End File
