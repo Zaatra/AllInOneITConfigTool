@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Mapping
 
-from services.installer import IVMSDownloader, WingetClient, WingetError
+from services.installer import HPSADownloader, IVMSDownloader, WingetClient, WingetError
 from allinone_it_config.app_registry import AppEntry
 
 try:  # Windows-only dependency, optional for non-Windows hosts
@@ -69,7 +69,7 @@ class AppStatusService:
         self._apps = list(apps)
         self._working_dir = Path(working_dir or Path.cwd())
         self._winget = winget_client or WingetClient()
-        self._direct_downloaders = {"iVMS-4200": IVMSDownloader()}
+        self._direct_downloaders = {"iVMS-4200": IVMSDownloader(), "HP Support Asst": HPSADownloader()}
 
     def scan_installed(self) -> list[InstalledInfo]:
         entries = self._read_uninstall_entries()
@@ -298,6 +298,8 @@ class AppStatusService:
                 "https://learn.microsoft.com/en-us/officeupdates/update-history-microsoft365-apps-by-date"
             )
         if app.name == "HP Support Asst":
+            if app.name in self._direct_downloaders:
+                return self._get_direct_latest(app.name)
             if app.winget_id:
                 winget_version = self._get_winget_latest(app.winget_id, app.source)
                 if not self._latest_unknown(winget_version) and winget_version != "N/A":

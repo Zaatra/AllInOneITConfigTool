@@ -4,10 +4,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, Iterable
 
-from PySide6.QtCore import Qt, QThreadPool
+from PySide6.QtCore import Qt, QThreadPool, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QDialog,
     QHeaderView,
     QHBoxLayout,
     QMessageBox,
@@ -21,7 +22,9 @@ from PySide6.QtWidgets import (
 
 from services.app_status import AppStatusService, AppUpdateResult, InstalledInfo
 from services.installer import InstallerService, OperationResult
-from allinone_it_config.app_registry import AppRegistry
+from allinone_it_config.app_registry import AppRegistry, build_registry
+from allinone_it_config.user_settings import SettingsStore, UserSettings
+from ui.settings_dialog import SettingsDialog
 from ui.workers import ServiceWorker
 
 LogCallback = Callable[[str], None]
@@ -44,13 +47,17 @@ class InstallTab(QWidget):
         thread_pool: QThreadPool,
         *,
         working_dir: Path | None = None,
+        settings: UserSettings | None = None,
+        settings_store: SettingsStore | None = None,
     ) -> None:
         super().__init__()
         self._registry = registry
         self._log = log_callback
         self._thread_pool = thread_pool
         self._working_dir = working_dir or Path.cwd()
-        self._service = InstallerService(registry.entries, working_dir=self._working_dir)
+        self._settings_store = settings_store or SettingsStore()
+        self._settings = settings or self._settings_store.load()
+        self._service = InstallerService(registry.entries, working_dir=self._working_dir, settings=self._settings)
         self._status_service = AppStatusService(registry.entries, working_dir=self._working_dir)
         self._installed_map: dict[str, InstalledInfo] = {}
         self._row_by_name: dict[str, int] = {}
@@ -65,11 +72,13 @@ class InstallTab(QWidget):
         self._btn_download = QPushButton("Download Offline")
         self._btn_install = QPushButton("Install Selected")
         self._btn_check_updates = QPushButton("Check for Updates")
+        self._btn_settings = QPushButton("Settings")
         self._btn_select_all = QPushButton("Select All")
         self._btn_select_none = QPushButton("Select None")
         button_row.addWidget(self._btn_download)
         button_row.addWidget(self._btn_install)
         button_row.addWidget(self._btn_check_updates)
+        button_row.addWidget(self._btn_settings)
         button_row.addStretch()
         button_row.addWidget(self._btn_select_all)
         button_row.addWidget(self._btn_select_none)
@@ -81,7 +90,7 @@ class InstallTab(QWidget):
         self._update_progress.setFormat("Checking updates... %p%")
         layout.addWidget(self._update_progress)
 
-        self._table = QTableWidget(len(self._registry.entries), 8, self)
+        self._table = QTableWidget(0, 8, self)
         self._table.setHorizontalHeaderLabels(
             ["Select", "Category", "Application", "Installed", "Latest", "Status", "Offline", "Mode"]
         )
@@ -99,6 +108,22 @@ class InstallTab(QWidget):
         header.setSectionResizeMode(self.COL_MODE, QHeaderView.ResizeMode.ResizeToContents)
         layout.addWidget(self._table)
 
+        self._populate_table()
+
+        self._btn_download.clicked.connect(lambda: self._start_action("download_selected"))
+        self._btn_install.clicked.connect(lambda: self._start_action("install_selected"))
+        self._btn_check_updates.clicked.connect(self._start_update_check)
+        self._btn_select_all.clicked.connect(self._select_all)
+        self._btn_select_none.clicked.connect(self._select_none)
+        self._btn_settings.clicked.connect(self._open_settings_dialog)
+        self._refresh_offline_status()
+        if not self._settings_store.exists():
+            QTimer.singleShot(0, lambda: self._open_settings_dialog(force=True))
+
+    def _populate_table(self) -> None:
+        self._table.setRowCount(len(self._registry.entries))
+        self._table.clearContents()
+        self._row_by_name.clear()
         for row, app in enumerate(self._registry.entries):
             checkbox = QTableWidgetItem()
             checkbox.setFlags(Qt.ItemIsSelectable | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
@@ -115,12 +140,25 @@ class InstallTab(QWidget):
             self._table.setItem(row, self.COL_MODE, QTableWidgetItem(app.download_mode))
             self._row_by_name[app.name] = row
 
-        self._btn_download.clicked.connect(lambda: self._start_action("download_selected"))
-        self._btn_install.clicked.connect(lambda: self._start_action("install_selected"))
-        self._btn_check_updates.clicked.connect(self._start_update_check)
-        self._btn_select_all.clicked.connect(self._select_all)
-        self._btn_select_none.clicked.connect(self._select_none)
+    def _open_settings_dialog(self, *, force: bool = False) -> bool:
+        if self._busy and not force:
+            QMessageBox.information(self, "In Progress", "Please wait for the current operation to complete.")
+            return False
+        dialog = SettingsDialog(self._settings, self._settings_store, self)
+        if dialog.exec() == QDialog.Accepted:
+            self._apply_registry(build_registry(self._settings))
+            return True
+        return False
+
+    def _apply_registry(self, registry: AppRegistry) -> None:
+        self._registry = registry
+        self._service = InstallerService(registry.entries, working_dir=self._working_dir, settings=self._settings)
+        self._status_service = AppStatusService(registry.entries, working_dir=self._working_dir)
+        self._installed_map.clear()
+        self._populate_table()
         self._refresh_offline_status()
+        if not self._busy:
+            self._start_installed_scan()
 
     def _select_all(self) -> None:
         for row in range(self._table.rowCount()):
@@ -141,6 +179,8 @@ class InstallTab(QWidget):
         selection = self._selected_apps()
         if not selection:
             QMessageBox.information(self, "No Selection", "Select at least one application to continue.")
+            return
+        if not self._ensure_settings_for(action, selection):
             return
         if not hasattr(self._service, action):
             QMessageBox.warning(self, "Unsupported", f"Unknown installer action: {action}")
@@ -171,6 +211,48 @@ class InstallTab(QWidget):
         self._set_buttons_enabled(True)
         self._update_progress.setVisible(False)
 
+    def _ensure_settings_for(self, action: str, selection: list[str]) -> bool:
+        missing = self._missing_settings(action, selection)
+        if not missing:
+            return True
+        message = "Settings required for selected apps:\n" + "\n".join(f"- {item}" for item in missing)
+        reply = QMessageBox.question(
+            self,
+            "Settings Required",
+            f"{message}\n\nOpen settings now?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return False
+        if not self._open_settings_dialog():
+            return False
+        missing = self._missing_settings(action, selection)
+        if missing:
+            message = "Still missing:\n" + "\n".join(f"- {item}" for item in missing)
+            QMessageBox.warning(self, "Settings Incomplete", message)
+            return False
+        return True
+
+    def _missing_settings(self, action: str, selection: list[str]) -> list[str]:
+        missing: list[str] = []
+        selected = {name.lower() for name in selection}
+        if "crowdstrike falcon sensor".lower() in selected:
+            if not self._settings.crowdstrike_cid.strip():
+                missing.append("CrowdStrike CID")
+            if action == "download_selected" and not self._settings.crowdstrike_download_url.strip():
+                missing.append("CrowdStrike download URL")
+        if action == "install_selected":
+            if "office 2024 ltsc".lower() in selected:
+                if not _file_exists(self._settings.office_2024_xml_path):
+                    missing.append("Office 2024 XML path")
+            if "office 365 ent".lower() in selected:
+                if not _file_exists(self._settings.office_365_xml_path):
+                    missing.append("Office 365 XML path")
+            if "winrar".lower() in selected:
+                if not _file_exists(self._settings.winrar_license_path):
+                    missing.append("WinRAR license file path")
+        return missing
+
     def _selected_apps(self) -> list[str]:
         selection: list[str] = []
         for row in range(self._table.rowCount()):
@@ -186,6 +268,7 @@ class InstallTab(QWidget):
             self._btn_download,
             self._btn_install,
             self._btn_check_updates,
+            self._btn_settings,
             self._btn_select_all,
             self._btn_select_none,
         ):
@@ -306,3 +389,10 @@ class InstallTab(QWidget):
             "checking": QColor("#f1c40f"),
         }
         return palette.get(level)
+
+
+def _file_exists(path: str) -> bool:
+    if not path:
+        return False
+    candidate = Path(path)
+    return candidate.exists() and candidate.is_file()

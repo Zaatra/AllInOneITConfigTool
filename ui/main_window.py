@@ -13,8 +13,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from allinone_it_config.app_registry import REGISTRY
+from allinone_it_config.app_registry import build_registry
 from allinone_it_config.constants import IMMUTABLE_CONFIG
+from allinone_it_config.user_settings import SettingsStore
 from ui.install_tab import InstallTab
 from ui.drivers_tab import DriversTab
 from ui.system_tab import SystemTab
@@ -28,6 +29,8 @@ class MainWindow(QMainWindow):
         self.resize(1200, 800)
         apply_dark_theme()
         self._thread_pool = QThreadPool.globalInstance()
+        self._settings_store = SettingsStore()
+        self._settings = self._settings_store.load()
         self._log_view = QTextEdit()
         self._log_view.setReadOnly(True)
         self._log_view.setMinimumHeight(120)
@@ -52,10 +55,12 @@ class MainWindow(QMainWindow):
 
     def _create_install_tab(self) -> QWidget:
         return InstallTab(
-            REGISTRY,
+            build_registry(self._settings),
             log_callback=self.log_message,
             thread_pool=self._thread_pool,
             working_dir=Path.cwd(),
+            settings=self._settings,
+            settings_store=self._settings_store,
         )
 
     def _create_drivers_tab(self) -> QWidget:

@@ -20,20 +20,37 @@ class DummyWingetClient(WingetClient):
     def __init__(self) -> None:
         super().__init__(executable="winget")
         self._available = True
-        self.installs: list[tuple[str, str | None, str | None]] = []
-        self.downloads: list[tuple[str, Path]] = []
+        self.installs: list[tuple[str, str | None, str | None, str | None]] = []
+        self.downloads: list[tuple[str, Path, str | None]] = []
 
     def is_available(self) -> bool:  # type: ignore[override]
         return self._available
 
-    def install_package(self, package_id: str, *, source: str | None = None, override: str | None = None, silent: bool = True, force: bool = True) -> CommandExecutionResult:  # type: ignore[override]
-        self.installs.append((package_id, source, override))
+    def install_package(
+        self,
+        package_id: str,
+        *,
+        source: str | None = None,
+        override: str | None = None,
+        version: str | None = None,
+        silent: bool = True,
+        force: bool = True,
+    ) -> CommandExecutionResult:  # type: ignore[override]
+        self.installs.append((package_id, source, override, version))
         return CommandExecutionResult(["winget", "install", package_id], 0, "ok", "")
 
-    def download_package(self, package_id: str, destination: Path, *, source: str | None = None, force: bool = True) -> CommandExecutionResult:  # type: ignore[override]
+    def download_package(
+        self,
+        package_id: str,
+        destination: Path,
+        *,
+        source: str | None = None,
+        version: str | None = None,
+        force: bool = True,
+    ) -> CommandExecutionResult:  # type: ignore[override]
         destination.mkdir(parents=True, exist_ok=True)
         (destination / "installer.exe").write_text("fake")
-        self.downloads.append((package_id, destination))
+        self.downloads.append((package_id, destination, version))
         return CommandExecutionResult(["winget", "download", package_id], 0, "ok", "")
 
     def show_package_version(self, package_id: str, *, source: str | None = None) -> str | None:  # type: ignore[override]
@@ -88,7 +105,7 @@ def test_install_via_winget_uses_client(chrome_entry: AppEntry) -> None:
     service = _service([chrome_entry], winget_client=fake_client)
     results = service.install_selected(["Chrome"])
     assert results[0].success
-    assert fake_client.installs == [("Google.Chrome", None, None)]
+    assert fake_client.installs == [("Google.Chrome", None, None, None)]
 
 
 def test_download_via_winget_uses_client(chrome_entry: AppEntry, tmp_path: Path) -> None:
@@ -163,6 +180,7 @@ def test_local_install_finds_installer(tmp_path: Path) -> None:
         category="Security",
         name="CrowdStrike Falcon Sensor",
         download_mode="localonly",
+        args="/install /quiet /norestart CID=TEST-CID",
         file_stem="crowdstrike_falcon_sensor",
     )
     service = InstallerService([app], working_dir=tmp_path)

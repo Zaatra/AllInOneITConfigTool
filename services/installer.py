@@ -8,13 +8,14 @@ import shutil
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Mapping, Protocol, Sequence
+from typing import Callable, Iterable, Mapping, Protocol, Sequence
 
 from allinone_it_config.app_registry import AppEntry
-from allinone_it_config.constants import IMMUTABLE_CONFIG, OfficeTemplate
+from allinone_it_config.user_settings import UserSettings
 
 
 @dataclass
@@ -54,10 +55,13 @@ class WingetClient:
         *,
         source: str | None = None,
         override: str | None = None,
+        version: str | None = None,
         silent: bool = True,
         force: bool = True,
     ) -> CommandExecutionResult:
         cmd = self._build_base_command("install", package_id, source, force)
+        if version:
+            cmd.extend(["--version", version])
         if silent:
             cmd.append("--silent")
         if override:
@@ -70,10 +74,13 @@ class WingetClient:
         destination: Path,
         *,
         source: str | None = None,
+        version: str | None = None,
         force: bool = True,
     ) -> CommandExecutionResult:
         destination.mkdir(parents=True, exist_ok=True)
         cmd = self._build_base_command("download", package_id, source, force)
+        if version:
+            cmd.extend(["--version", version])
         cmd.extend(["-d", str(destination)])
         return self._run(cmd)
 
@@ -143,21 +150,16 @@ class WingetClient:
 class OfficeInstaller:
     """Handles Office Deployment Tool download and execution."""
 
-    TEMPLATE_KEYS = {
-        "Office 2024 LTSC": "office_2024_ltsc",
-        "Office 365 Ent": "office_365_enterprise",
-    }
-
     def __init__(
         self,
         working_dir: Path,
         *,
         winget_client: WingetClient | None = None,
-        templates: dict[str, OfficeTemplate] | None = None,
+        template_loader: Callable[[str], str] | None = None,
     ) -> None:
         self._working_dir = Path(working_dir)
         self._winget = winget_client or WingetClient()
-        self._templates = templates or IMMUTABLE_CONFIG.office_templates
+        self._template_loader = template_loader
         self._setup_path = self._working_dir / "setup.exe"
         self._staging_dir = self._working_dir / "OfficeSetup"
 
@@ -180,13 +182,14 @@ class OfficeInstaller:
         return result
 
     def install(self, app_name: str) -> CommandExecutionResult:
-        key = self.TEMPLATE_KEYS.get(app_name)
-        if not key:
-            raise KeyError(f"No Office template mapped for {app_name}")
-        template = self._templates[key]
+        if not self._template_loader:
+            raise ValueError("Office template loader not configured")
+        template_xml = self._template_loader(app_name)
+        if not template_xml.strip():
+            raise ValueError(f"Office XML template empty for {app_name}")
         self._staging_dir.mkdir(parents=True, exist_ok=True)
         config_path = self._staging_dir / "config.xml"
-        config_path.write_text(template.xml, encoding="utf-8")
+        config_path.write_text(template_xml, encoding="utf-8")
         self.ensure_setup()
         cmd = [str(self._setup_path), "/configure", str(config_path)]
         completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
@@ -211,6 +214,26 @@ class LocalInstallerInfo:
 class DirectDownloader(Protocol):
     def fetch(self) -> DirectDownloadInfo:
         ...
+
+
+@dataclass(frozen=True)
+class LicenseApplyResult:
+    success: bool
+    message: str
+
+
+class ConfiguredUrlDownloader:
+    def __init__(self, url: str, *, default_filename: str, version: str | None = None) -> None:
+        self._url = url
+        self._default_filename = default_filename
+        self._version = version or "custom"
+
+    def fetch(self) -> DirectDownloadInfo:
+        url = self._url.strip()
+        if not url:
+            raise RuntimeError("Download URL not configured")
+        filename = _filename_from_url(url) or self._default_filename
+        return DirectDownloadInfo(version=self._version, url=url, filename=filename)
 
 
 class IVMSDownloader:
@@ -253,6 +276,35 @@ class IVMSDownloader:
         return found
 
 
+class HPSADownloader:
+    """Parses HP's redirector JS to find the active Support Assistant installer."""
+
+    SOURCE_URL = "https://hpsa-redirectors.hpcloud.hp.com/common/hpsaredirector.js"
+    EXE_PATTERN = re.compile(r'return\s+.*?"(ftp\.hp\.com.*?\.exe)"', re.IGNORECASE)
+    VERSION_PATTERN = re.compile(r"//\s*([0-9.]+)")
+
+    def fetch(self) -> DirectDownloadInfo:
+        request = urllib.request.Request(self.SOURCE_URL, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(request, timeout=20) as response:
+            content = response.read().decode("utf-8", errors="ignore")
+        for line in content.splitlines():
+            trimmed = line.strip()
+            if not trimmed or trimmed.startswith("//"):
+                continue
+            match = self.EXE_PATTERN.search(trimmed)
+            if not match:
+                continue
+            relative = match.group(1)
+            url = "https://" + relative
+            version = "Unknown"
+            version_match = self.VERSION_PATTERN.search(trimmed)
+            if version_match:
+                version = version_match.group(1)
+            filename = _filename_from_url(url) or "hp_support_assistant.exe"
+            return DirectDownloadInfo(version=version, url=url, filename=filename)
+        raise RuntimeError("Active HP Support Assistant link not found")
+
+
 @dataclass
 class OperationResult:
     app: AppEntry
@@ -272,14 +324,25 @@ class InstallerService:
         winget_client: WingetClient | None = None,
         office_installer: OfficeInstaller | None = None,
         direct_downloaders: Mapping[str, DirectDownloader] | None = None,
+        settings: UserSettings | None = None,
     ) -> None:
         self._apps = list(apps)
         self._working_dir = Path(working_dir or Path.cwd())
         self._downloads_dir = self._working_dir / "downloads"
         self._winget = winget_client or WingetClient()
-        self._office = office_installer or OfficeInstaller(self._working_dir, winget_client=self._winget)
-        default_direct = {"iVMS-4200": IVMSDownloader()}
+        self._settings = settings or UserSettings()
+        self._office = office_installer or OfficeInstaller(
+            self._working_dir,
+            winget_client=self._winget,
+            template_loader=self._settings.load_office_xml,
+        )
+        default_direct = {"iVMS-4200": IVMSDownloader(), "HP Support Asst": HPSADownloader()}
         self._direct_downloaders = dict(default_direct)
+        if self._settings.crowdstrike_download_url.strip():
+            self._direct_downloaders["CrowdStrike Falcon Sensor"] = ConfiguredUrlDownloader(
+                self._settings.crowdstrike_download_url.strip(),
+                default_filename="crowdstrike_falcon_sensor.exe",
+            )
         if direct_downloaders:
             self._direct_downloaders.update(direct_downloaders)
 
@@ -301,6 +364,7 @@ class InstallerService:
         search_dirs = [self._working_dir]
         if include_downloads:
             search_dirs.append(self._downloads_dir)
+            search_dirs.append(self._downloads_dir / _safe_name(app.name))
         if app.dual_arch:
             path_x86 = None
             path_x64 = None
@@ -314,8 +378,20 @@ class InstallerService:
         patterns: list[str] = []
         if app.file_stem:
             patterns.extend([f"{app.file_stem}_*.exe", f"{app.file_stem}_*.msi"])
-        exact_names = tuple(app.local_alt_names) if app.download_mode == "localonly" else ()
+        exact_names = tuple(app.local_alt_names) if app.download_mode in {"localonly", "direct"} else ()
+        if app.file_stem and app.winget_version:
+            normalized = _normalize_version_string(app.winget_version) or app.winget_version
+            safe_version = _safe_file_part(normalized)
+            version_pattern = f"{app.file_stem}_{safe_version}.*"
+            for directory in search_dirs:
+                for candidate in directory.glob(version_pattern):
+                    if candidate.suffix.lower() in {".exe", ".msi"}:
+                        return LocalInstallerInfo(True, path=candidate)
         path = self._best_local_by_patterns(search_dirs, patterns, exact_names)
+        if not path and app.download_mode == "direct" and include_downloads:
+            fallback_dir = self._downloads_dir / _safe_name(app.name)
+            candidates = list(fallback_dir.glob("*.exe")) + list(fallback_dir.glob("*.msi"))
+            path = _pick_best_candidate(candidates)
         return LocalInstallerInfo(bool(path), path=path)
 
     def install_selected(self, selection: Iterable[str]) -> list[OperationResult]:
@@ -356,33 +432,47 @@ class InstallerService:
         return OperationResult(app, "install", False, "Local installer not found")
 
     def _install_app(self, app: AppEntry) -> OperationResult:
+        if app.name == "CrowdStrike Falcon Sensor" and not _has_crowdstrike_cid(app, self._settings):
+            return OperationResult(app, "install", False, "CrowdStrike CID not configured in settings")
         if app.download_mode in {"winget", "onlineonly"}:
             local_info = self.get_local_installer_info(app, include_downloads=True)
             if local_info.exists:
-                return self._install_from_local(app, local_info)
-            return self._install_via_winget(app)
+                result = self._install_from_local(app, local_info)
+            else:
+                result = self._install_via_winget(app)
+            return self._apply_post_install_steps(app, result)
         if app.download_mode == "office":
             try:
                 result = self._office.install(app.name)
-                return OperationResult(app, "install", result.succeeded, "Office deployment finished" if result.succeeded else "Office deployment failed", result.stdout, result.stderr)
+                return OperationResult(
+                    app,
+                    "install",
+                    result.succeeded,
+                    "Office deployment finished" if result.succeeded else "Office deployment failed",
+                    result.stdout,
+                    result.stderr,
+                )
             except Exception as exc:
                 return OperationResult(app, "install", False, str(exc))
         if app.download_mode == "direct":
             local_info = self.get_local_installer_info(app, include_downloads=True)
             if local_info.exists:
-                return self._install_from_local(app, local_info)
+                result = self._install_from_local(app, local_info)
+                return self._apply_post_install_steps(app, result)
             download_result = self._download_direct(app)
             if not download_result.success:
                 return OperationResult(app, "install", False, download_result.message, download_result.stdout, download_result.stderr)
             local_info = self.get_local_installer_info(app, include_downloads=True)
             if local_info.exists:
-                return self._install_from_local(app, local_info)
+                result = self._install_from_local(app, local_info)
+                return self._apply_post_install_steps(app, result)
             return OperationResult(app, "install", False, "Downloaded installer missing after download")
         if app.download_mode == "localonly":
             local_info = self.get_local_installer_info(app, include_downloads=False)
             if not local_info.exists:
                 return OperationResult(app, "install", False, "Local installer not found in working directory")
-            return self._install_from_local(app, local_info)
+            result = self._install_from_local(app, local_info)
+            return self._apply_post_install_steps(app, result)
         return OperationResult(app, "install", False, f"Download mode {app.download_mode} not implemented")
 
     def _download_app(self, app: AppEntry) -> OperationResult:
@@ -414,12 +504,14 @@ class InstallerService:
         stdout_parts: list[str] = []
         stderr_parts: list[str] = []
         success = True
+        version = app.winget_version.strip() if app.winget_version else None
         for package_id in package_ids:
             try:
                 result = self._winget.install_package(
                     package_id,
                     source=app.source,
                     override=app.args or None,
+                    version=version,
                 )
             except WingetError as exc:
                 return OperationResult(app, "install", False, str(exc))
@@ -441,6 +533,7 @@ class InstallerService:
         stderr_parts: list[str] = []
         messages: list[str] = []
         success = True
+        version_override = app.winget_version.strip() if app.winget_version else None
         target_root = self._downloads_dir / _safe_name(app.name)
         target_root.mkdir(parents=True, exist_ok=True)
         packages: list[tuple[str, str]] = []
@@ -455,13 +548,15 @@ class InstallerService:
             stem = app.file_stem or _safe_name(app.name)
             packages.append((app.winget_id, stem))
         for package_id, stem in packages:
-            version_raw = None
-            try:
-                version_raw = self._winget.show_package_version(package_id, source=app.source)
-            except WingetError as exc:
-                success = False
-                messages.append(f"{stem}: {exc}")
-                continue
+            if version_override:
+                version_raw = version_override
+            else:
+                try:
+                    version_raw = self._winget.show_package_version(package_id, source=app.source)
+                except WingetError as exc:
+                    success = False
+                    messages.append(f"{stem}: {exc}")
+                    continue
             version = _normalize_version_string(version_raw) or version_raw or "unknown"
             safe_version = _safe_file_part(version)
             existing = self._find_existing_versioned_file(target_root, stem, safe_version)
@@ -475,6 +570,7 @@ class InstallerService:
                     package_id,
                     destination=temp_dir,
                     source=app.source,
+                    version=version_override,
                 )
             except WingetError as exc:
                 success = False
@@ -583,6 +679,18 @@ class InstallerService:
         with urllib.request.urlopen(request, timeout=60) as response:
             destination.write_bytes(response.read())
 
+    def _apply_post_install_steps(self, app: AppEntry, result: OperationResult) -> OperationResult:
+        if not result.success:
+            return result
+        if app.name != "WinRAR":
+            return result
+        license_result = _apply_winrar_license(self._settings)
+        if license_result.success:
+            message = f"{result.message}; {license_result.message}" if license_result.message else result.message
+            return OperationResult(app, result.operation, True, message, result.stdout, result.stderr)
+        message = f"{result.message}; {license_result.message}" if license_result.message else "WinRAR license copy failed"
+        return OperationResult(app, result.operation, False, message, result.stdout, result.stderr)
+
 
 def _normalize_version_string(value: str | None) -> str | None:
     if not value or not value.strip():
@@ -643,3 +751,48 @@ def _safe_name(name: str) -> str:
 
 def _is_64bit() -> bool:
     return sys.maxsize > 2**32
+
+
+def _filename_from_url(url: str) -> str | None:
+    parsed = urllib.parse.urlparse(url)
+    name = Path(parsed.path).name
+    if not name:
+        return None
+    if Path(name).suffix.lower() not in {".exe", ".msi"}:
+        return None
+    return name
+
+
+def _has_crowdstrike_cid(app: AppEntry, settings: UserSettings) -> bool:
+    if "CID=" in app.args:
+        return True
+    return bool(settings.crowdstrike_cid.strip())
+
+
+def _apply_winrar_license(settings: UserSettings) -> LicenseApplyResult:
+    license_path = settings.winrar_license_path.strip()
+    if not license_path:
+        return LicenseApplyResult(False, "WinRAR license path not configured")
+    source = Path(license_path)
+    if not source.exists() or not source.is_file():
+        return LicenseApplyResult(False, f"WinRAR license file not found: {source}")
+    install_dir = _find_winrar_install_dir()
+    if not install_dir:
+        return LicenseApplyResult(False, "WinRAR install directory not found")
+    destination = install_dir / source.name
+    try:
+        shutil.copy2(source, destination)
+    except OSError as exc:
+        return LicenseApplyResult(False, f"WinRAR license copy failed: {exc}")
+    return LicenseApplyResult(True, f"WinRAR license applied ({destination})")
+
+
+def _find_winrar_install_dir() -> Path | None:
+    for env_key in ("ProgramFiles", "ProgramFiles(x86)"):
+        base = os.environ.get(env_key)
+        if not base:
+            continue
+        candidate = Path(base) / "WinRAR"
+        if (candidate / "WinRAR.exe").exists():
+            return candidate
+    return None

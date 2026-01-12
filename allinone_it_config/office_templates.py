@@ -1,7 +1,13 @@
 """Helpers for Office Deployment Tool templates."""
 from __future__ import annotations
 
-from allinone_it_config.constants import OfficeTemplate
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class OfficeTemplate:
+    name: str
+    xml: str
 
 
 def get_template(name: str, templates: dict[str, OfficeTemplate]) -> OfficeTemplate:
