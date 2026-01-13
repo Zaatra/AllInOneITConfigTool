@@ -138,6 +138,21 @@ def test_office_download_triggers_setup_download(office_entry: AppEntry) -> None
     assert fake_office.download_calls == ["Office 2024 LTSC"]
 
 
+def test_office_payload_marks_ready(tmp_path: Path) -> None:
+    app = AppEntry(
+        category="Core",
+        name="Office 365 Ent",
+        download_mode="office",
+        winget_id="Microsoft.OfficeDeploymentTool",
+    )
+    payload_dir = tmp_path / "office_365_ent" / "Office" / "Data"
+    payload_dir.mkdir(parents=True)
+    (payload_dir / "payload.cab").write_text("fake payload")
+    service = InstallerService([app], working_dir=tmp_path)
+    info = service.get_local_installer_info(app, include_downloads=True)
+    assert info.exists
+
+
 class DummyDirectDownloader:
     def __init__(self) -> None:
         self.fetch_count = 0

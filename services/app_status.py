@@ -11,6 +11,7 @@ from typing import Callable, Iterable, Mapping
 from services.installer import HPSADownloader, IVMSDownloader, WingetClient, WingetError
 from allinone_it_config.app_registry import AppEntry
 from allinone_it_config.paths import get_application_directory
+from allinone_it_config.user_settings import UserSettings
 
 try:  # Windows-only dependency, optional for non-Windows hosts
     import winreg  # type: ignore
@@ -66,10 +67,12 @@ class AppStatusService:
         *,
         working_dir: Path | str | None = None,
         winget_client: WingetClient | None = None,
+        settings: UserSettings | None = None,
     ) -> None:
         self._apps = list(apps)
         self._working_dir = Path(working_dir) if working_dir is not None else get_application_directory()
         self._winget = winget_client or WingetClient()
+        self._settings = settings or UserSettings()
         self._direct_downloaders = {"iVMS-4200": IVMSDownloader(), "HP Support Asst": HPSADownloader()}
 
     def scan_installed(self) -> list[InstalledInfo]:
@@ -319,6 +322,12 @@ class AppStatusService:
         return f"x86: {x86} | x64: {x64}"
 
     def _get_local_odt_version(self) -> str | None:
+        settings_path = self._settings.odt_setup_path.strip()
+        if settings_path:
+            candidate = Path(settings_path)
+            version = _get_file_version(candidate) if candidate.suffix.lower() == ".exe" else None
+            if version:
+                return _normalize_version(version) or version
         version_dir = self._working_dir / "odt_versions"
         if not version_dir.exists():
             version_dir = None
@@ -358,7 +367,25 @@ class AppStatusService:
                     return _normalize_version(value) or value
         if best_value:
             return best_value[1]
-        return fallback
+        if fallback:
+            return fallback
+        for candidate in self._odt_setup_candidates():
+            version = _get_file_version(candidate)
+            if version:
+                return _normalize_version(version) or version
+        return None
+
+    def _odt_setup_candidates(self) -> Iterable[Path]:
+        candidates = [
+            self._working_dir / "setup.exe",
+            self._working_dir / "OfficeSetup" / "setup.exe",
+        ]
+        for name in ("office_2024_ltsc", "office_365_ent"):
+            candidates.append(self._working_dir / name / "setup.exe")
+            candidates.append(self._working_dir / "Office" / name / "setup.exe")
+        for candidate in candidates:
+            if candidate.exists() and candidate.is_file():
+                yield candidate
 
     def _get_latest_version(self, app: AppEntry) -> str:
         if app.name == "Office 2024 LTSC":
@@ -573,3 +600,53 @@ def _office_latest_build(latest_text: str) -> str | None:
 
 def _is_64bit() -> bool:
     return sys.maxsize > 2**32
+
+
+def _get_file_version(path: Path) -> str | None:
+    if sys.platform != "win32":
+        return None
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception:
+        return None
+
+    class VS_FIXEDFILEINFO(ctypes.Structure):
+        _fields_ = [
+            ("dwSignature", wintypes.DWORD),
+            ("dwStrucVersion", wintypes.DWORD),
+            ("dwFileVersionMS", wintypes.DWORD),
+            ("dwFileVersionLS", wintypes.DWORD),
+            ("dwProductVersionMS", wintypes.DWORD),
+            ("dwProductVersionLS", wintypes.DWORD),
+            ("dwFileFlagsMask", wintypes.DWORD),
+            ("dwFileFlags", wintypes.DWORD),
+            ("dwFileOS", wintypes.DWORD),
+            ("dwFileType", wintypes.DWORD),
+            ("dwFileSubtype", wintypes.DWORD),
+            ("dwFileDateMS", wintypes.DWORD),
+            ("dwFileDateLS", wintypes.DWORD),
+        ]
+
+    size = ctypes.windll.version.GetFileVersionInfoSizeW(str(path), None)
+    if not size:
+        return None
+    data = ctypes.create_string_buffer(size)
+    if not ctypes.windll.version.GetFileVersionInfoW(str(path), 0, size, data):
+        return None
+    value = ctypes.c_void_p()
+    length = wintypes.UINT()
+    if not ctypes.windll.version.VerQueryValueW(data, "\\", ctypes.byref(value), ctypes.byref(length)):
+        return None
+    if length.value < ctypes.sizeof(VS_FIXEDFILEINFO):
+        return None
+    fixed = ctypes.cast(value.value, ctypes.POINTER(VS_FIXEDFILEINFO)).contents
+    if fixed.dwSignature != 0xFEEF04BD:
+        return None
+    major = fixed.dwFileVersionMS >> 16
+    minor = fixed.dwFileVersionMS & 0xFFFF
+    build = fixed.dwFileVersionLS >> 16
+    revision = fixed.dwFileVersionLS & 0xFFFF
+    return f"{major}.{minor}.{build}.{revision}"

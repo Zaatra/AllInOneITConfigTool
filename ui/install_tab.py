@@ -60,7 +60,11 @@ class InstallTab(QWidget):
         self._settings_store = settings_store or SettingsStore()
         self._settings = settings or self._settings_store.load()
         self._service = InstallerService(registry.entries, working_dir=self._working_dir, settings=self._settings)
-        self._status_service = AppStatusService(registry.entries, working_dir=self._working_dir)
+        self._status_service = AppStatusService(
+            registry.entries,
+            working_dir=self._working_dir,
+            settings=self._settings,
+        )
         self._installed_map: dict[str, InstalledInfo] = {}
         self._row_by_name: dict[str, int] = {}
         self._busy = False
@@ -169,7 +173,11 @@ class InstallTab(QWidget):
     def _apply_registry(self, registry: AppRegistry) -> None:
         self._registry = registry
         self._service = InstallerService(registry.entries, working_dir=self._working_dir, settings=self._settings)
-        self._status_service = AppStatusService(registry.entries, working_dir=self._working_dir)
+        self._status_service = AppStatusService(
+            registry.entries,
+            working_dir=self._working_dir,
+            settings=self._settings,
+        )
         self._installed_map.clear()
         self._populate_table()
         self._refresh_offline_status()
@@ -347,7 +355,11 @@ class InstallTab(QWidget):
             if row is None:
                 continue
             if app.name == "Office Deployment Tool":
-                self._set_item_text(row, self.COL_OFFLINE, "Managed")
+                odt_path = self._settings.odt_setup_path.strip()
+                if odt_path and Path(odt_path).is_file():
+                    self._set_item_text(row, self.COL_OFFLINE, "Ready")
+                else:
+                    self._set_item_text(row, self.COL_OFFLINE, "Managed")
                 continue
             local_info = self._service.get_local_installer_info(app, include_downloads=True)
             if local_info.exists:

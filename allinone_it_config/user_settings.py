@@ -21,6 +21,7 @@ class UserSettings:
     crowdstrike_download_url: str = ""
     office_2024_xml_path: str = ""
     office_365_xml_path: str = ""
+    odt_setup_path: str = ""
     winrar_license_path: str = ""
     java_version: str = ""
     teamviewer_args: str = ""
@@ -37,6 +38,7 @@ class UserSettings:
             "crowdstrike_download_url": self.crowdstrike_download_url,
             "office_2024_xml_path": self.office_2024_xml_path,
             "office_365_xml_path": self.office_365_xml_path,
+            "odt_setup_path": self.odt_setup_path,
             "winrar_license_path": self.winrar_license_path,
             "java_version": self.java_version,
             "teamviewer_args": self.teamviewer_args,
@@ -59,6 +61,7 @@ class UserSettings:
             crowdstrike_download_url=_get("crowdstrike_download_url"),
             office_2024_xml_path=_get("office_2024_xml_path"),
             office_365_xml_path=_get("office_365_xml_path"),
+            odt_setup_path=_get("odt_setup_path"),
             winrar_license_path=_get("winrar_license_path"),
             java_version=_get("java_version"),
             teamviewer_args=_get("teamviewer_args"),

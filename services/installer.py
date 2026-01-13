@@ -164,12 +164,14 @@ class OfficeInstaller:
         *,
         winget_client: WingetClient | None = None,
         template_loader: Callable[[str], str] | None = None,
+        odt_setup_path: str | None = None,
     ) -> None:
         self._working_dir = Path(working_dir)
         self._winget = winget_client or WingetClient()
         self._template_loader = template_loader
         self._office_root = self._working_dir
         self._odt_version_dir = self._working_dir / "odt_versions"
+        self._odt_setup_path = Path(odt_setup_path) if odt_setup_path else None
 
     def office_dir(self, app_name: str) -> Path:
         return self._office_root / _safe_name(app_name)
@@ -182,6 +184,29 @@ class OfficeInstaller:
 
     def _version_path(self, app_name: str) -> Path:
         return self._odt_version_dir / f"{_safe_name(app_name)}.txt"
+
+    def _legacy_office_dir(self, app_name: str) -> Path:
+        return self._working_dir / "Office" / _safe_name(app_name)
+
+    def odt_override_path(self) -> Path | None:
+        if not self._odt_setup_path:
+            return None
+        if self._odt_setup_path.suffix.lower() != ".exe":
+            return None
+        if self._odt_setup_path.exists() and self._odt_setup_path.is_file():
+            return self._odt_setup_path
+        return None
+
+    def setup_executable(self, app_name: str) -> Path:
+        override = self.odt_override_path()
+        if override:
+            return override
+        return self.setup_path(app_name)
+
+    def has_payload(self, app_name: str) -> bool:
+        if _office_payload_present(self.office_dir(app_name)):
+            return True
+        return _office_payload_present(self._legacy_office_dir(app_name))
 
     def _clean_office_dir(self, office_dir: Path) -> None:
         if not office_dir.exists():
@@ -224,6 +249,8 @@ class OfficeInstaller:
         return False
 
     def ensure_setup(self, app_name: str) -> CommandExecutionResult | None:
+        if self.odt_override_path():
+            return None
         if not self._winget.is_available():
             raise WingetError("winget unavailable to fetch Office Deployment Tool")
         office_dir = self.office_dir(app_name)
@@ -264,7 +291,7 @@ class OfficeInstaller:
         config_path = self.config_path(app_name)
         config_path.write_text(template_xml, encoding="utf-8")
         self.ensure_setup(app_name)
-        cmd = [str(self.setup_path(app_name)), "/configure", str(config_path)]
+        cmd = [str(self.setup_executable(app_name)), "/configure", str(config_path)]
         completed = subprocess.run(cmd, capture_output=True, text=True, check=False, cwd=office_dir)
         return CommandExecutionResult(cmd, completed.returncode, completed.stdout, completed.stderr)
 
@@ -280,7 +307,7 @@ class OfficeInstaller:
         config_path.write_text(template_xml, encoding="utf-8")
         self.ensure_setup(app_name)
         self._clean_office_dir(office_dir)
-        cmd = [str(self.setup_path(app_name)), "/download", str(config_path)]
+        cmd = [str(self.setup_executable(app_name)), "/download", str(config_path)]
         completed = _run_office_download(cmd, office_dir, label=app_name, status_callback=status_callback)
         return completed
 
@@ -424,6 +451,7 @@ class InstallerService:
             self._working_dir,
             winget_client=self._winget,
             template_loader=self._settings.load_office_xml,
+            odt_setup_path=self._settings.odt_setup_path,
         )
         default_direct = {"iVMS-4200": IVMSDownloader(), "HP Support Asst": HPSADownloader()}
         self._direct_downloaders = dict(default_direct)
@@ -454,7 +482,12 @@ class InstallerService:
             return LocalInstallerInfo(False)
         if app.download_mode == "office":
             setup_path = self._office.setup_path(app.name)
-            return LocalInstallerInfo(setup_path.exists(), path=setup_path if setup_path.exists() else None)
+            if setup_path.exists():
+                return LocalInstallerInfo(True, path=setup_path)
+            if self._office.has_payload(app.name):
+                override = self._office.odt_override_path()
+                return LocalInstallerInfo(True, path=override if override else None)
+            return LocalInstallerInfo(False)
         search_dirs = [self._working_dir]
         if include_downloads:
             search_dirs.append(self._downloads_dir)
@@ -997,6 +1030,24 @@ def _directory_payload_size_bytes(path: Path) -> int:
             except OSError:
                 continue
     return total
+
+
+def _dir_has_entries(path: Path) -> bool:
+    if not path.exists() or not path.is_dir():
+        return False
+    try:
+        next(path.iterdir())
+    except StopIteration:
+        return False
+    except OSError:
+        return False
+    return True
+
+
+def _office_payload_present(office_dir: Path) -> bool:
+    if _dir_has_entries(office_dir / "Office"):
+        return True
+    return _dir_has_entries(office_dir / "Data")
 
 
 def _format_speed(value: float) -> str:

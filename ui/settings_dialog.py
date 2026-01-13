@@ -51,6 +51,16 @@ class SettingsDialog(QDialog):
         self._office_365_path = QLineEdit(self._settings.office_365_xml_path)
         form.addRow("Office 365 XML", self._make_path_picker(self._office_365_path, "Select Office 365 XML", "XML Files (*.xml);;All Files (*)"))
 
+        self._odt_setup_path = QLineEdit(self._settings.odt_setup_path)
+        form.addRow(
+            "Office Deployment Tool EXE",
+            self._make_path_picker(
+                self._odt_setup_path,
+                "Select Office Deployment Tool",
+                "Executable Files (*.exe);;All Files (*)",
+            ),
+        )
+
         self._winrar_license = QLineEdit(self._settings.winrar_license_path)
         form.addRow("WinRAR License File", self._make_path_picker(self._winrar_license, "Select WinRAR License", "Key Files (*.key);;All Files (*)"))
 
@@ -168,6 +178,7 @@ class SettingsDialog(QDialog):
         self._settings.crowdstrike_download_url = self._crowdstrike_url.text().strip()
         self._settings.office_2024_xml_path = self._office_2024_path.text().strip()
         self._settings.office_365_xml_path = self._office_365_path.text().strip()
+        self._settings.odt_setup_path = self._odt_setup_path.text().strip()
         self._settings.winrar_license_path = self._winrar_license.text().strip()
         self._settings.hp_legacy_repo_root = self._hp_legacy_repo.text().strip()
         self._settings.java_version = self._java_version.currentText().strip()
