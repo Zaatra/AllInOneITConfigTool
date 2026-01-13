@@ -440,6 +440,9 @@ class InstallTab(QWidget):
         self._update_action_progress_text()
 
     def _handle_action_message(self, message: str) -> None:
+        if message.startswith("[DEBUG]"):
+            self._log(message)
+            return
         self._action_app = message
         self._update_action_progress_text()
 

@@ -677,6 +677,8 @@ class InstallerService:
         return OperationResult(app, "install", False, f"Download mode {app.download_mode} not implemented")
 
     def _download_app(self, app: AppEntry, *, status_callback: Callable[[str], None] | None = None) -> OperationResult:
+        if status_callback and app.name in {"CrowdStrike Falcon Sensor", "FortiClient VPN"}:
+            status_callback(f"[DEBUG] download_app app={app.name} mode={app.download_mode}")
         if app.name == "Office Deployment Tool":
             return OperationResult(app, "download", True, "ODT is managed automatically with Office downloads")
         if app.download_mode == "onlineonly":
@@ -823,6 +825,9 @@ class InstallerService:
         status_callback: Callable[[str], None] | None = None,
     ) -> OperationResult:
         downloader = self._direct_downloaders.get(app.name)
+        if status_callback and app.name in {"CrowdStrike Falcon Sensor", "FortiClient VPN"}:
+            downloader_name = downloader.__class__.__name__ if downloader else "None"
+            status_callback(f"[DEBUG] download_direct app={app.name} downloader={downloader_name}")
         if not downloader:
             return OperationResult(app, "download", False, f"No direct downloader registered for {app.name}")
         try:
@@ -835,6 +840,15 @@ class InstallerService:
         destination_dir = self._downloads_dir / _safe_name(app.name)
         destination_dir.mkdir(parents=True, exist_ok=True)
         if app.name in {"CrowdStrike Falcon Sensor", "FortiClient VPN"}:
+            if status_callback:
+                status_callback(
+                    "[DEBUG] sharepoint_check app={app} url={url} is_sharepoint={is_sharepoint} dest_dir={dest}".format(
+                        app=app.name,
+                        url=info.url,
+                        is_sharepoint=_is_sharepoint_url(info.url),
+                        dest=destination_dir,
+                    )
+                )
             if not _is_sharepoint_url(info.url):
                 return OperationResult(app, "download", False, f"{app.name} download URL must be a SharePoint link")
             dest_path = destination_dir / filename
@@ -1082,6 +1096,8 @@ def _download_sharepoint_exe(
     except OSError:
         pass
     download_url = _sharepoint_download_url(share_url)
+    if status_callback:
+        status_callback(f"[DEBUG] sharepoint_download url={download_url} temp_path={temp_path}")
     _download_file_with_requests(
         download_url,
         temp_path,
