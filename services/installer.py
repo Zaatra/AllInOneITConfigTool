@@ -198,6 +198,31 @@ class OfficeInstaller:
                 except OSError:
                     continue
 
+    def _recover_setup_exe(self, app_name: str, office_dir: Path, setup_path: Path) -> bool:
+        try:
+            candidates = sorted(
+                {path for path in office_dir.rglob("setup.exe")},
+                key=lambda path: (len(path.parts), str(path).lower()),
+            )
+        except OSError:
+            candidates = []
+        for candidate in candidates:
+            if candidate == setup_path:
+                return True
+            try:
+                candidate.replace(setup_path)
+                return True
+            except OSError:
+                continue
+        legacy_setup = self._working_dir / "Office" / _safe_name(app_name) / "setup.exe"
+        if legacy_setup.exists():
+            try:
+                shutil.copy2(legacy_setup, setup_path)
+                return True
+            except OSError:
+                return False
+        return False
+
     def ensure_setup(self, app_name: str) -> CommandExecutionResult | None:
         if not self._winget.is_available():
             raise WingetError("winget unavailable to fetch Office Deployment Tool")
@@ -215,11 +240,13 @@ class OfficeInstaller:
             current_version = version_path.read_text(encoding="utf-8").strip()
             if current_version == latest_version:
                 return None
-        override = f"/quiet /extract:{office_dir}"
+        override = f'/quiet /extract:"{office_dir}"'
         result = self._winget.install_package(
             "Microsoft.OfficeDeploymentTool",
             override=override,
         )
+        if not setup_path.exists():
+            self._recover_setup_exe(app_name, office_dir, setup_path)
         if not setup_path.exists():
             raise FileNotFoundError("setup.exe missing after Office Deployment Tool extraction")
         version_path.parent.mkdir(parents=True, exist_ok=True)
