@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
 import sys
 import urllib.request
 from dataclasses import dataclass
@@ -81,6 +83,33 @@ class AppStatusService:
         for app in self._apps:
             if app.name == "Office Deployment Tool":
                 version = self._get_local_odt_version()
+                if version:
+                    results.append(
+                        InstalledInfo(
+                            app=app,
+                            installed_text=version,
+                            installed_version=version,
+                            installed_x86=None,
+                            installed_x64=None,
+                            is_installed=True,
+                            is_known=True,
+                        )
+                    )
+                else:
+                    results.append(
+                        InstalledInfo(
+                            app=app,
+                            installed_text=_STATUS_NOT_INSTALLED,
+                            installed_version=None,
+                            installed_x86=None,
+                            installed_x64=None,
+                            is_installed=False,
+                            is_known=True,
+                        )
+                    )
+                continue
+            if app.name == "HP Support Asst":
+                version = self._get_hp_support_appx_version()
                 if version:
                     results.append(
                         InstalledInfo(
@@ -272,6 +301,38 @@ class AppStatusService:
         if best_value:
             return best_value[1]
         return fallback
+
+    def _get_hp_support_appx_version(self) -> str | None:
+        if sys.platform != "win32":
+            return None
+        powershell = shutil.which("powershell") or shutil.which("pwsh")
+        if not powershell:
+            return None
+        script = (
+            "$pkg = $null; "
+            "try { $pkg = Get-AppxPackage -AllUsers -ErrorAction Stop | "
+            "Where-Object { $_.Name -match 'HPSupportAssistant|HP.*SupportAssistant|HPInc.*Support' } | "
+            "Sort-Object Version -Descending | Select-Object -First 1 } catch { "
+            "try { $pkg = Get-AppxPackage -ErrorAction Stop | "
+            "Where-Object { $_.Name -match 'HPSupportAssistant|HP.*SupportAssistant|HPInc.*Support' } | "
+            "Sort-Object Version -Descending | Select-Object -First 1 } catch {} } "
+            "if ($pkg) { $pkg.Version.ToString() }"
+        )
+        try:
+            completed = subprocess.run(
+                [powershell, "-NoProfile", "-Command", script],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError:
+            return None
+        if completed.returncode != 0:
+            return None
+        output = completed.stdout.strip()
+        if not output:
+            return None
+        return _normalize_version(output) or output
 
     def _get_vc_installed_map(self, vc_key: str, entries: Iterable[_UninstallEntry]) -> dict[str, str | None]:
         patterns = {
