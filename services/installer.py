@@ -986,13 +986,6 @@ def _sharepoint_download_url(url: str) -> str:
     return f"{url}&download=1" if "?" in url else f"{url}?download=1"
 
 
-def _extract_sharepoint_guid(url: str) -> str | None:
-    match = re.search(r"sourcedoc=%7B([0-9a-fA-F-]{36})%7D", url)
-    if match:
-        return match.group(1)
-    return None
-
-
 def _file_has_exe_header(path: Path) -> bool:
     try:
         with path.open("rb") as handle:
@@ -1027,7 +1020,7 @@ def _download_sharepoint_exe(
     except OSError:
         pass
     download_url = _sharepoint_download_url(share_url)
-    final_url = _download_file_with_final_url(
+    _download_file_with_final_url(
         download_url,
         temp_path,
         status_callback=status_callback,
@@ -1036,15 +1029,6 @@ def _download_sharepoint_exe(
     if _file_has_exe_header(temp_path):
         temp_path.replace(dest_path)
         return dest_path
-    guid = _extract_sharepoint_guid(final_url)
-    if guid:
-        parsed = urllib.parse.urlparse(share_url)
-        base = f"{parsed.scheme}://{parsed.netloc}"
-        direct_url = f"{base}/_layouts/15/download.aspx?UniqueId={guid}"
-        _download_file_with_final_url(direct_url, temp_path, status_callback=status_callback, label=label)
-        if _file_has_exe_header(temp_path):
-            temp_path.replace(dest_path)
-            return dest_path
     try:
         temp_path.unlink()
     except OSError:
