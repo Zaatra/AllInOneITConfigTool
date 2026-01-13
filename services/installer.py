@@ -165,11 +165,12 @@ class OfficeInstaller:
         winget_client: WingetClient | None = None,
         template_loader: Callable[[str], str] | None = None,
         odt_setup_path: str | None = None,
+        office_root: Path | None = None,
     ) -> None:
         self._working_dir = Path(working_dir)
         self._winget = winget_client or WingetClient()
         self._template_loader = template_loader
-        self._office_root = self._working_dir
+        self._office_root = Path(office_root) if office_root else self._working_dir
         self._odt_version_dir = self._working_dir / "odt_versions"
         self._odt_setup_path = Path(odt_setup_path) if odt_setup_path else None
 
@@ -187,6 +188,13 @@ class OfficeInstaller:
 
     def _legacy_office_dir(self, app_name: str) -> Path:
         return self._working_dir / "Office" / _safe_name(app_name)
+
+    def _legacy_office_dirs(self, app_name: str) -> tuple[Path, ...]:
+        safe_name = _safe_name(app_name)
+        return (
+            self._working_dir / safe_name,
+            self._legacy_office_dir(app_name),
+        )
 
     def odt_override_path(self) -> Path | None:
         if not self._odt_setup_path:
@@ -206,7 +214,10 @@ class OfficeInstaller:
     def has_payload(self, app_name: str) -> bool:
         if _office_payload_present(self.office_dir(app_name)):
             return True
-        return _office_payload_present(self._legacy_office_dir(app_name))
+        for legacy_dir in self._legacy_office_dirs(app_name):
+            if _office_payload_present(legacy_dir):
+                return True
+        return False
 
     def _clean_office_dir(self, office_dir: Path) -> None:
         if not office_dir.exists():
@@ -239,8 +250,10 @@ class OfficeInstaller:
                 return True
             except OSError:
                 continue
-        legacy_setup = self._working_dir / "Office" / _safe_name(app_name) / "setup.exe"
-        if legacy_setup.exists():
+        for legacy_dir in self._legacy_office_dirs(app_name):
+            legacy_setup = legacy_dir / "setup.exe"
+            if not legacy_setup.exists():
+                continue
             try:
                 shutil.copy2(legacy_setup, setup_path)
                 return True
@@ -452,6 +465,7 @@ class InstallerService:
             winget_client=self._winget,
             template_loader=self._settings.load_office_xml,
             odt_setup_path=self._settings.odt_setup_path,
+            office_root=self._downloads_dir,
         )
         default_direct = {"iVMS-4200": IVMSDownloader(), "HP Support Asst": HPSADownloader()}
         self._direct_downloaders = dict(default_direct)
@@ -515,7 +529,7 @@ class InstallerService:
                     if candidate.suffix.lower() in {".exe", ".msi"}:
                         return LocalInstallerInfo(True, path=candidate)
         path = self._best_local_by_patterns(search_dirs, patterns, exact_names)
-        if not path and app.download_mode == "direct" and include_downloads:
+        if not path and include_downloads:
             fallback_dir = self._downloads_dir / _safe_name(app.name)
             candidates = list(fallback_dir.glob("*.exe")) + list(fallback_dir.glob("*.msi"))
             path = _pick_best_candidate(candidates)
