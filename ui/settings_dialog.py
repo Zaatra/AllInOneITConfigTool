@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
+from urllib.parse import urlparse
 
 from PySide6.QtWidgets import (
     QComboBox,
@@ -40,20 +41,31 @@ class SettingsDialog(QDialog):
 
         self._crowdstrike_cid = QLineEdit(self._settings.crowdstrike_cid)
         self._crowdstrike_cid.setPlaceholderText("Example: CID=00000000000000000000000000000000-00")
-        form.addRow("CrowdStrike CID", self._crowdstrike_cid)
+        self._crowdstrike_cid_label = QLabel("CrowdStrike CID")
+        form.addRow(self._crowdstrike_cid_label, self._crowdstrike_cid)
 
         self._crowdstrike_url = QLineEdit(self._settings.crowdstrike_download_url)
-        form.addRow("CrowdStrike Download URL", self._crowdstrike_url)
+        self._crowdstrike_url_label = QLabel("CrowdStrike Download URL")
+        form.addRow(self._crowdstrike_url_label, self._crowdstrike_url)
 
         self._office_2024_path = QLineEdit(self._settings.office_2024_xml_path)
-        form.addRow("Office 2024 XML", self._make_path_picker(self._office_2024_path, "Select Office 2024 XML", "XML Files (*.xml);;All Files (*)"))
+        self._office_2024_label = QLabel("Office 2024 XML")
+        form.addRow(
+            self._office_2024_label,
+            self._make_path_picker(self._office_2024_path, "Select Office 2024 XML", "XML Files (*.xml);;All Files (*)"),
+        )
 
         self._office_365_path = QLineEdit(self._settings.office_365_xml_path)
-        form.addRow("Office 365 XML", self._make_path_picker(self._office_365_path, "Select Office 365 XML", "XML Files (*.xml);;All Files (*)"))
+        self._office_365_label = QLabel("Office 365 XML")
+        form.addRow(
+            self._office_365_label,
+            self._make_path_picker(self._office_365_path, "Select Office 365 XML", "XML Files (*.xml);;All Files (*)"),
+        )
 
         self._odt_setup_path = QLineEdit(self._settings.odt_setup_path)
+        self._odt_setup_label = QLabel("Office Deployment Tool EXE")
         form.addRow(
-            "Office Deployment Tool EXE",
+            self._odt_setup_label,
             self._make_path_picker(
                 self._odt_setup_path,
                 "Select Office Deployment Tool",
@@ -62,10 +74,15 @@ class SettingsDialog(QDialog):
         )
 
         self._winrar_license = QLineEdit(self._settings.winrar_license_path)
-        form.addRow("WinRAR License File", self._make_path_picker(self._winrar_license, "Select WinRAR License", "Key Files (*.key);;All Files (*)"))
+        self._winrar_license_label = QLabel("WinRAR License File")
+        form.addRow(
+            self._winrar_license_label,
+            self._make_path_picker(self._winrar_license, "Select WinRAR License", "Key Files (*.key);;All Files (*)"),
+        )
 
         self._hp_legacy_repo = QLineEdit(self._settings.hp_legacy_repo_root)
-        form.addRow("HP Legacy Repo Root", self._make_dir_picker(self._hp_legacy_repo, "Select HP Legacy Repo Root"))
+        self._hp_legacy_repo_label = QLabel("HP Legacy Repo Root")
+        form.addRow(self._hp_legacy_repo_label, self._make_dir_picker(self._hp_legacy_repo, "Select HP Legacy Repo Root"))
 
         self._java_version = QComboBox()
         self._java_version.setEditable(True)
@@ -77,7 +94,8 @@ class SettingsDialog(QDialog):
         self._btn_java_versions = QPushButton("List Versions")
         self._btn_java_versions.clicked.connect(self._list_java_versions)
         java_layout.addWidget(self._btn_java_versions)
-        form.addRow("Java Version", java_row)
+        self._java_version_label = QLabel("Java Version")
+        form.addRow(self._java_version_label, java_row)
 
         self._java_hint = QLabel("Leave blank for latest; enter a full winget version if needed.")
         form.addRow("", self._java_hint)
@@ -91,7 +109,8 @@ class SettingsDialog(QDialog):
         index = self._teamviewer_mode.findData(mode)
         if index >= 0:
             self._teamviewer_mode.setCurrentIndex(index)
-        form.addRow("TeamViewer Install Mode", self._teamviewer_mode)
+        self._teamviewer_mode_label = QLabel("TeamViewer Install Mode")
+        form.addRow(self._teamviewer_mode_label, self._teamviewer_mode)
 
         self._teamviewer_args = QLineEdit(self._settings.teamviewer_args)
         self._teamviewer_args_label = QLabel("TeamViewer Host Args")
@@ -103,13 +122,16 @@ class SettingsDialog(QDialog):
             "Select TeamViewer MSI",
             "MSI Files (*.msi);;All Files (*)",
         )
-        form.addRow("TeamViewer MSI", self._teamviewer_msi_row)
+        self._teamviewer_msi_label = QLabel("TeamViewer MSI")
+        form.addRow(self._teamviewer_msi_label, self._teamviewer_msi_row)
 
         self._teamviewer_customconfig = QLineEdit(self._settings.teamviewer_customconfig_id)
-        form.addRow("TeamViewer CUSTOMCONFIGID", self._teamviewer_customconfig)
+        self._teamviewer_customconfig_label = QLabel("TeamViewer CUSTOMCONFIGID")
+        form.addRow(self._teamviewer_customconfig_label, self._teamviewer_customconfig)
 
         self._teamviewer_assignment = QLineEdit(self._settings.teamviewer_assignment_id)
-        form.addRow("TeamViewer ASSIGNMENTID", self._teamviewer_assignment)
+        self._teamviewer_assignment_label = QLabel("TeamViewer ASSIGNMENTID")
+        form.addRow(self._teamviewer_assignment_label, self._teamviewer_assignment)
 
         self._teamviewer_settings_file = QLineEdit(self._settings.teamviewer_settings_file)
         self._teamviewer_settings_row = self._make_path_picker(
@@ -117,11 +139,13 @@ class SettingsDialog(QDialog):
             "Select TeamViewer Settings File",
             "TVOPT Files (*.tvopt);;All Files (*)",
         )
-        form.addRow("TeamViewer SETTINGSFILE", self._teamviewer_settings_row)
+        self._teamviewer_settings_label = QLabel("TeamViewer SETTINGSFILE")
+        form.addRow(self._teamviewer_settings_label, self._teamviewer_settings_row)
 
         self._teamviewer_msi_args = QLineEdit()
         self._teamviewer_msi_args.setReadOnly(True)
-        form.addRow("TeamViewer MSI Args", self._teamviewer_msi_args)
+        self._teamviewer_msi_args_label = QLabel("TeamViewer MSI Args")
+        form.addRow(self._teamviewer_msi_args_label, self._teamviewer_msi_args)
 
         layout.addLayout(form)
 
@@ -134,11 +158,19 @@ class SettingsDialog(QDialog):
         self._teamviewer_customconfig.textChanged.connect(self._update_teamviewer_msi_args)
         self._teamviewer_assignment.textChanged.connect(self._update_teamviewer_msi_args)
         self._teamviewer_settings_file.textChanged.connect(self._update_teamviewer_msi_args)
-        self._teamviewer_msi_path.textChanged.connect(self._update_teamviewer_args_label)
-        self._teamviewer_args.textChanged.connect(self._update_teamviewer_args_label)
+        self._teamviewer_msi_path.textChanged.connect(self._update_validation)
+        self._teamviewer_args.textChanged.connect(self._update_validation)
+        self._crowdstrike_cid.textChanged.connect(self._update_validation)
+        self._crowdstrike_url.textChanged.connect(self._update_validation)
+        self._office_2024_path.textChanged.connect(self._update_validation)
+        self._office_365_path.textChanged.connect(self._update_validation)
+        self._odt_setup_path.textChanged.connect(self._update_validation)
+        self._winrar_license.textChanged.connect(self._update_validation)
+        self._hp_legacy_repo.textChanged.connect(self._update_validation)
+        self._java_version.currentTextChanged.connect(self._update_validation)
         self._update_teamviewer_msi_args()
         self._update_teamviewer_mode_ui()
-        self._update_teamviewer_args_label()
+        self._update_validation()
 
     def _make_path_picker(self, field: QLineEdit, title: str, filter_text: str) -> QWidget:
         container = QWidget()
@@ -217,7 +249,7 @@ class SettingsDialog(QDialog):
             self._teamviewer_msi_args,
         ):
             widget.setEnabled(use_msi)
-        self._update_teamviewer_args_label()
+        self._update_validation()
 
     def _update_teamviewer_msi_args(self) -> None:
         parts = ["/qn", "/norestart"]
@@ -233,14 +265,14 @@ class SettingsDialog(QDialog):
                 settings_file = f'\"{settings_file}\"'
             parts.append(f"SETTINGSFILE={settings_file}")
         self._teamviewer_msi_args.setText(" ".join(parts))
-        self._update_teamviewer_args_label()
+        self._update_validation()
 
     def _teamviewer_msi_issues(self) -> list[str]:
         missing: list[str] = []
-        teamviewer_msi_path = self._teamviewer_msi_path.text().strip()
+        teamviewer_msi_path = self._clean_path_value(self._teamviewer_msi_path.text())
         teamviewer_customconfig = self._teamviewer_customconfig.text().strip()
         teamviewer_assignment = self._teamviewer_assignment.text().strip()
-        teamviewer_settings_file = self._teamviewer_settings_file.text().strip()
+        teamviewer_settings_file = self._clean_path_value(self._teamviewer_settings_file.text())
         if not teamviewer_msi_path:
             missing.append("TeamViewer MSI path")
         elif not Path(teamviewer_msi_path).is_file():
@@ -257,14 +289,94 @@ class SettingsDialog(QDialog):
             missing.append("TeamViewer SETTINGSFILE not found")
         return missing
 
-    def _update_teamviewer_args_label(self) -> None:
+    def _update_validation(self) -> None:
         use_msi = self._teamviewer_mode.currentData() == "msi"
-        if use_msi:
-            valid = not self._teamviewer_msi_issues()
-        else:
-            valid = True
+        self._set_label_valid(self._crowdstrike_cid_label, self._is_crowdstrike_cid_valid())
+        self._set_label_valid(
+            self._crowdstrike_url_label,
+            self._is_url_valid(self._crowdstrike_url.text(), allow_empty=True),
+        )
+        self._set_label_valid(self._office_2024_label, self._is_file_valid(self._office_2024_path.text(), suffixes=(".xml",)))
+        self._set_label_valid(self._office_365_label, self._is_file_valid(self._office_365_path.text(), suffixes=(".xml",)))
+        self._set_label_valid(
+            self._odt_setup_label,
+            self._is_file_valid(self._odt_setup_path.text(), suffixes=(".exe",), allow_empty=True),
+        )
+        self._set_label_valid(self._winrar_license_label, self._is_file_valid(self._winrar_license.text(), suffixes=(".key",)))
+        self._set_label_valid(self._hp_legacy_repo_label, self._is_dir_valid(self._hp_legacy_repo.text(), allow_empty=True))
+        self._set_label_valid(self._java_version_label, self._is_java_version_valid())
+        self._set_label_valid(self._teamviewer_mode_label, True)
+        self._set_label_valid(self._teamviewer_args_label, (not use_msi) or not self._teamviewer_msi_issues())
+        self._set_label_valid(
+            self._teamviewer_msi_label,
+            (not use_msi) or self._is_file_valid(self._teamviewer_msi_path.text(), suffixes=(".msi",)),
+        )
+        self._set_label_valid(self._teamviewer_customconfig_label, (not use_msi) or bool(self._teamviewer_customconfig.text().strip()))
+        self._set_label_valid(self._teamviewer_assignment_label, (not use_msi) or bool(self._teamviewer_assignment.text().strip()))
+        self._set_label_valid(
+            self._teamviewer_settings_label,
+            (not use_msi) or self._is_teamviewer_settings_file_valid(),
+        )
+        self._set_label_valid(self._teamviewer_msi_args_label, (not use_msi) or not self._teamviewer_msi_issues())
+
+    def _set_label_valid(self, label: QLabel, valid: bool) -> None:
         color = "#4caf50" if valid else "#f44336"
-        self._teamviewer_args_label.setStyleSheet(f"color: {color}; font-weight: bold;")
+        label.setStyleSheet(f"color: {color}; font-weight: bold;")
+
+    def _clean_path_value(self, value: str) -> str:
+        cleaned = value.strip()
+        if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in ('"', "'"):
+            cleaned = cleaned[1:-1].strip()
+        return cleaned
+
+    def _is_file_valid(
+        self,
+        value: str,
+        *,
+        suffixes: tuple[str, ...] | None = None,
+        allow_empty: bool = False,
+    ) -> bool:
+        cleaned = self._clean_path_value(value)
+        if not cleaned:
+            return allow_empty
+        path = Path(cleaned)
+        if suffixes and path.suffix.lower() not in suffixes:
+            return False
+        return path.exists() and path.is_file()
+
+    def _is_dir_valid(self, value: str, *, allow_empty: bool = False) -> bool:
+        cleaned = self._clean_path_value(value)
+        if not cleaned:
+            return allow_empty
+        path = Path(cleaned)
+        return path.exists() and path.is_dir()
+
+    def _is_url_valid(self, value: str, *, allow_empty: bool = False) -> bool:
+        cleaned = value.strip()
+        if not cleaned:
+            return allow_empty
+        parsed = urlparse(cleaned)
+        return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+    def _is_crowdstrike_cid_valid(self) -> bool:
+        cid_value = self._crowdstrike_cid.text().strip()
+        if cid_value.upper().startswith("CID="):
+            cid_value = cid_value[4:].strip()
+        return bool(re.fullmatch(r"[0-9A-Fa-f]{32}(?:-[0-9A-Fa-f]{2})?", cid_value))
+
+    def _is_java_version_valid(self) -> bool:
+        version = self._java_version.currentText().strip()
+        if not version:
+            return True
+        return bool(re.fullmatch(r"\d+(?:\.\d+){1,3}", version))
+
+    def _is_teamviewer_settings_file_valid(self) -> bool:
+        settings_file = self._clean_path_value(self._teamviewer_settings_file.text())
+        if not settings_file:
+            return False
+        if not settings_file.lower().endswith(".tvopt"):
+            return False
+        return Path(settings_file).is_file()
 
     def _list_java_versions(self) -> None:
         exe = shutil.which("winget")
