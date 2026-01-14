@@ -254,7 +254,10 @@ class AppStatusService:
         if self._latest_unknown(latest_text):
             return None
         if app.name in {"Office 2024 LTSC", "Office 365 Ent"}:
-            return None
+            if not local_versions.version:
+                return None
+            ok = self._office_versions_ok(local_versions.version, latest_text)
+            return "Latest" if ok else "Outdated"
         if app.dual_arch:
             if not local_versions.version_x86:
                 return None

@@ -153,6 +153,23 @@ def test_office_payload_marks_ready(tmp_path: Path) -> None:
     assert info.exists
 
 
+def test_office_payload_version_from_data_folder(tmp_path: Path) -> None:
+    app = AppEntry(
+        category="Core",
+        name="Office 365 Ent",
+        download_mode="office",
+        winget_id="Microsoft.OfficeDeploymentTool",
+    )
+    version = "16.0.19530.20138"
+    payload_dir = tmp_path / "downloads" / "office_365_ent" / "Office" / "Data" / version
+    payload_dir.mkdir(parents=True)
+    (payload_dir / "payload.cab").write_text("fake payload")
+    service = InstallerService([app], working_dir=tmp_path)
+    info = service.get_local_installer_info(app, include_downloads=True)
+    versions = service.get_local_installer_versions(app, info)
+    assert versions.version == version
+
+
 class DummyDirectDownloader:
     def __init__(self) -> None:
         self.fetch_count = 0

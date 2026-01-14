@@ -31,6 +31,7 @@ from ui.settings_dialog import SettingsDialog
 from ui.workers import ServiceWorker
 
 LogCallback = Callable[[str], None]
+_OFFLINE_SUFFIX_SKIP = {"Office 2024 LTSC", "Office 365 Ent", "Office Deployment Tool", "TeamViewer"}
 
 
 class InstallTab(QWidget):
@@ -398,7 +399,7 @@ class InstallTab(QWidget):
             if local_info.exists:
                 text = "Ready"
                 suffix = self._offline_version_status(app, local_info)
-                if suffix:
+                if suffix and app.name not in _OFFLINE_SUFFIX_SKIP:
                     text = f"{text} - {suffix}"
             elif self._service.is_downloadable(app):
                 text = "Downloadable"

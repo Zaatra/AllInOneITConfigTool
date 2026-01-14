@@ -220,6 +220,14 @@ class OfficeInstaller:
                 return True
         return False
 
+    def payload_version(self, app_name: str) -> str | None:
+        versions: list[str] = []
+        for office_dir in (self.office_dir(app_name), *self._legacy_office_dirs(app_name)):
+            versions.extend(_office_payload_versions(office_dir))
+        if not versions:
+            return None
+        return max(versions, key=_version_tuple)
+
     def _clean_office_dir(self, office_dir: Path) -> None:
         if not office_dir.exists():
             return
@@ -555,7 +563,8 @@ class InstallerService:
         if not info.exists:
             return LocalInstallerVersionInfo()
         if app.download_mode == "office":
-            return LocalInstallerVersionInfo()
+            version = self._office.payload_version(app.name)
+            return LocalInstallerVersionInfo(version=version)
         if app.dual_arch:
             return LocalInstallerVersionInfo(
                 version_x86=_local_version_from_path(info.path_x86),
@@ -1415,6 +1424,27 @@ def _office_payload_present(office_dir: Path) -> bool:
     if _dir_has_entries(office_dir / "Office"):
         return True
     return _dir_has_entries(office_dir / "Data")
+
+
+def _office_payload_versions(office_dir: Path) -> list[str]:
+    versions: list[str] = []
+    for data_root in (office_dir / "Office" / "Data", office_dir / "Data"):
+        if not data_root.exists() or not data_root.is_dir():
+            continue
+        try:
+            entries = list(data_root.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if not entry.is_dir():
+                continue
+            normalized = _normalize_version_string(entry.name)
+            if not normalized:
+                continue
+            if not _version_tuple(normalized):
+                continue
+            versions.append(normalized)
+    return versions
 
 
 def _format_speed(value: float) -> str:
