@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from services.app_status import AppStatusService, AppUpdateResult, InstalledInfo
-from services.installer import InstallerService, LocalInstallerInfo, OperationResult
+from services.installer import InstallerService, LocalInstallerInfo, LocalInstallerVersionInfo, OperationResult
 from allinone_it_config.app_registry import AppEntry, AppRegistry, build_registry
 from allinone_it_config.paths import get_application_directory
 from allinone_it_config.user_settings import SettingsStore, UserSettings
@@ -31,7 +31,6 @@ from ui.settings_dialog import SettingsDialog
 from ui.workers import ServiceWorker
 
 LogCallback = Callable[[str], None]
-_OFFLINE_SUFFIX_SKIP = {"Office 2024 LTSC", "Office 365 Ent", "Office Deployment Tool", "TeamViewer"}
 
 
 class InstallTab(QWidget):
@@ -390,16 +389,30 @@ class InstallTab(QWidget):
                 continue
             if app.name == "Office Deployment Tool":
                 odt_path = self._settings.odt_setup_path.strip()
+                odt_version = self._status_service.get_local_odt_version()
                 if odt_path and Path(odt_path).is_file():
-                    self._set_item_text(row, self.COL_OFFLINE, "Ready")
+                    text = "Ready"
+                elif odt_version:
+                    text = "Ready"
                 else:
                     self._set_item_text(row, self.COL_OFFLINE, "Managed")
+                    continue
+                latest_text = self._latest_versions.get(app.name)
+                if odt_version and latest_text:
+                    suffix = self._status_service.offline_installer_status(
+                        app,
+                        LocalInstallerVersionInfo(version=odt_version),
+                        latest_text,
+                    )
+                    if suffix:
+                        text = f"{text} - {suffix}"
+                self._set_item_text(row, self.COL_OFFLINE, text)
                 continue
             local_info = self._service.get_local_installer_info(app, include_downloads=True)
             if local_info.exists:
                 text = "Ready"
                 suffix = self._offline_version_status(app, local_info)
-                if suffix and app.name not in _OFFLINE_SUFFIX_SKIP:
+                if suffix:
                     text = f"{text} - {suffix}"
             elif self._service.is_downloadable(app):
                 text = "Downloadable"
@@ -408,20 +421,11 @@ class InstallTab(QWidget):
             self._set_item_text(row, self.COL_OFFLINE, text)
 
     def _offline_version_status(self, app: AppEntry, local_info: LocalInstallerInfo) -> str | None:
-        if not self._has_downloaded_installer(local_info):
-            return None
         latest_text = self._latest_versions.get(app.name)
         if not latest_text:
             return None
         local_versions = self._service.get_local_installer_versions(app, local_info)
         return self._status_service.offline_installer_status(app, local_versions, latest_text)
-
-    def _has_downloaded_installer(self, local_info: LocalInstallerInfo) -> bool:
-        downloads_root = self._working_dir / "downloads"
-        for path in (local_info.path, local_info.path_x86, local_info.path_x64):
-            if path and _is_in_dir(path, downloads_root):
-                return True
-        return False
 
     def _start_update_check(self) -> None:
         if self._busy:
@@ -583,14 +587,6 @@ def _file_exists(path: str) -> bool:
         return False
     candidate = Path(path)
     return candidate.exists() and candidate.is_file()
-
-
-def _is_in_dir(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-        return True
-    except ValueError:
-        return False
 
 
 def _format_elapsed(total_seconds: int) -> str:

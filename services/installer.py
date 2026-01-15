@@ -556,7 +556,8 @@ class InstallerService:
         if not path and include_downloads:
             fallback_dir = self._downloads_dir / _safe_name(app.name)
             candidates = list(fallback_dir.glob("*.exe")) + list(fallback_dir.glob("*.msi"))
-            path = _pick_best_candidate(candidates)
+            best_path, _ = _best_versioned_installer(candidates)
+            path = best_path or _pick_best_candidate(candidates)
         return LocalInstallerInfo(bool(path), path=path)
 
     def get_local_installer_versions(self, app: AppEntry, info: LocalInstallerInfo) -> LocalInstallerVersionInfo:

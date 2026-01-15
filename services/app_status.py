@@ -243,6 +243,9 @@ class AppStatusService:
                 progress_callback(index, total, app.name)
         return results
 
+    def get_local_odt_version(self) -> str | None:
+        return self._get_local_odt_version()
+
     def offline_installer_status(
         self,
         app: AppEntry,
