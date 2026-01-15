@@ -5,10 +5,12 @@ from pathlib import Path
 from typing import Callable, Iterable, List
 
 from PySide6.QtCore import Qt, QThreadPool
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHeaderView,
     QHBoxLayout,
+    QLabel,
     QMessageBox,
     QPushButton,
     QTableWidget,
@@ -79,6 +81,7 @@ class DriversTab(QWidget):
         self._table = QTableWidget(0, 6, self)
         self._table.setHorizontalHeaderLabels(["Select", "Source", "Name", "Installed", "Latest", "Status"])
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self._table.setAlternatingRowColors(True)
         self._table.verticalHeader().setVisible(False)
         header = self._table.horizontalHeader()
         header.setStretchLastSection(True)
@@ -113,6 +116,8 @@ class DriversTab(QWidget):
         self._records = list(records)
         self._populate_table()
         self._log(f"Driver scan complete. Found {len(self._records)} entries.")
+        for warning in self._service.last_scan_warnings:
+            self._log(f"[WARN] {warning}")
         self._busy = False
         self._set_buttons_enabled(True)
 
@@ -146,22 +151,28 @@ class DriversTab(QWidget):
     def _populate_table(self) -> None:
         self._table.setRowCount(len(self._records))
         for row, record in enumerate(self._records):
+            self._table.setRowHeight(row, 28)
             checkbox = QTableWidgetItem()
             checkbox.setFlags(Qt.ItemIsSelectable | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
             checkbox.setCheckState(Qt.Unchecked)
             checkbox.setData(Qt.UserRole, row)
             self._table.setItem(row, 0, checkbox)
 
-            self._table.setItem(row, 1, QTableWidgetItem(record.source))
+            self._set_badge_cell(row, 1, record.source, self._source_badge_style(record.source))
             self._table.setItem(row, 2, QTableWidgetItem(record.name))
             installed = record.installed_version or "Unknown"
             latest = record.latest_version or "Unknown"
-            self._table.setItem(row, 3, QTableWidgetItem(installed))
-            self._table.setItem(row, 4, QTableWidgetItem(latest))
+            installed_item = QTableWidgetItem(installed)
+            installed_item.setTextAlignment(Qt.AlignCenter)
+            self._table.setItem(row, 3, installed_item)
+            latest_item = QTableWidgetItem(latest)
+            latest_item.setTextAlignment(Qt.AlignCenter)
+            self._table.setItem(row, 4, latest_item)
             status_text = record.status
             if record.output_path:
                 status_text += " (cached)"
-            self._table.setItem(row, 5, QTableWidgetItem(status_text))
+            self._set_badge_cell(row, 5, status_text, self._status_badge_style(record.status))
+            self._apply_version_colors(row, record.status)
 
     def _selected_records(self) -> List[DriverRecord]:
         selections: list[DriverRecord] = []
@@ -187,3 +198,57 @@ class DriversTab(QWidget):
         self._log(f"[ERROR] {message}")
         self._busy = False
         self._set_buttons_enabled(True)
+
+    def _set_badge_cell(self, row: int, column: int, text: str, palette: tuple[str, str, str]) -> None:
+        label = QLabel(text)
+        label.setAlignment(Qt.AlignCenter)
+        label.setStyleSheet(
+            "QLabel {"
+            f"color: {palette[0]};"
+            f"background-color: {palette[1]};"
+            f"border: 1px solid {palette[2]};"
+            "border-radius: 8px;"
+            "padding: 2px 6px;"
+            "font-weight: 600;"
+            "}"
+        )
+        self._table.setCellWidget(row, column, label)
+
+    def _source_badge_style(self, source: str) -> tuple[str, str, str]:
+        palette = {
+            "HPIA": ("#dbeafe", "#1e3a8a", "#3b82f6"),
+            "CMSL": ("#ccfbf1", "#0f766e", "#14b8a6"),
+            "LEGACY": ("#e5e7eb", "#374151", "#6b7280"),
+        }
+        return palette.get(source.upper(), ("#e5e7eb", "#4b5563", "#9ca3af"))
+
+    def _status_badge_style(self, status: str) -> tuple[str, str, str]:
+        palette = {
+            "critical": ("#fee2e2", "#7f1d1d", "#ef4444"),
+            "update available": ("#fee2e2", "#7f1d1d", "#ef4444"),
+            "recommended": ("#fef3c7", "#78350f", "#f59e0b"),
+            "optional": ("#e0f2fe", "#075985", "#38bdf8"),
+            "up to date": ("#dcfce7", "#14532d", "#22c55e"),
+            "installed": ("#dcfce7", "#14532d", "#22c55e"),
+            "not installed": ("#e5e7eb", "#4b5563", "#9ca3af"),
+            "legacy": ("#e5e7eb", "#374151", "#9ca3af"),
+            "unknown": ("#e5e7eb", "#4b5563", "#9ca3af"),
+        }
+        return palette.get(status.lower(), ("#e5e7eb", "#4b5563", "#9ca3af"))
+
+    def _apply_version_colors(self, row: int, status: str) -> None:
+        installed_item = self._table.item(row, 3)
+        latest_item = self._table.item(row, 4)
+        if not installed_item or not latest_item:
+            return
+        status_key = status.lower()
+        if status_key in {"up to date", "installed"}:
+            installed_item.setForeground(QColor("#22c55e"))
+        elif status_key in {"update available", "critical"}:
+            latest_item.setForeground(QColor("#ef4444"))
+        elif status_key == "recommended":
+            latest_item.setForeground(QColor("#f59e0b"))
+        elif status_key == "optional":
+            latest_item.setForeground(QColor("#38bdf8"))
+        elif status_key in {"not installed", "unknown"}:
+            installed_item.setForeground(QColor("#9ca3af"))

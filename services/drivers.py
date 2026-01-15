@@ -558,20 +558,29 @@ class DriverService:
         self._cmsl = cmsl_client or CMSLClient()
         self._legacy = legacy_repo or LegacyRepository(legacy_repo_root)
         self._system_info_provider = system_info_provider or get_hp_system_info
+        self.last_scan_warnings: list[str] = []
 
     def scan(self) -> list[DriverRecord]:
         info = self._system_info_provider()
+        self.last_scan_warnings = []
         records: list[DriverRecord] = []
-        if info.supports_hpia and self._hpia.is_available():
+        if self._hpia.is_available():
             try:
                 records.extend(self._hpia.scan())
-            except Exception:
-                pass
-        if info.supports_cmsl and self._cmsl.is_available():
-            try:
-                records.extend(self._cmsl.scan(info.platform_id))
-            except Exception:
-                pass
+            except Exception as exc:
+                self.last_scan_warnings.append(f"HPIA scan failed: {exc}")
+        elif info.supports_hpia or info.manufacturer or info.model or info.platform_id:
+            self.last_scan_warnings.append(
+                "HPIA not found. Install HP Image Assistant or place HPImageAssistant.exe in the working directory."
+            )
+        if info.supports_cmsl:
+            if self._cmsl.is_available():
+                try:
+                    records.extend(self._cmsl.scan(info.platform_id))
+                except Exception as exc:
+                    self.last_scan_warnings.append(f"CMSL scan failed: {exc}")
+            else:
+                self.last_scan_warnings.append("CMSL not available. Install the HPCMSL PowerShell module.")
         if not records and info.supports_legacy_repo:
             records.extend(self._legacy.list_packages(info.platform_id, info.model))
         return records
