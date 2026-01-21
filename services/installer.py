@@ -849,9 +849,25 @@ class InstallerService:
             stderr_parts.append(result.stderr)
             if not result.succeeded:
                 shutil.rmtree(temp_dir, ignore_errors=True)
-                success = False
                 error_msg = result.stderr.strip() or result.stdout.strip() or f"download failed (exit code {result.returncode})"
-                messages.append(f"{stem}: {error_msg}")
+                fallback_path = None
+                if app.name == "Chrome" and _winget_hash_mismatch(error_msg):
+                    try:
+                        fallback_path = self._download_chrome_direct(
+                            target_root,
+                            stem,
+                            safe_version,
+                            status_callback=status_callback,
+                        )
+                    except Exception as exc:
+                        success = False
+                        messages.append(f"{stem}: {error_msg}; direct download failed ({exc})")
+                        continue
+                if fallback_path:
+                    messages.append(f"{stem}: winget hash mismatch; downloaded {fallback_path.name} direct")
+                else:
+                    success = False
+                    messages.append(f"{stem}: {error_msg}")
                 continue
             installer = self._find_downloaded_installer(temp_dir)
             if not installer:
@@ -933,6 +949,20 @@ class InstallerService:
         except Exception as exc:
             return OperationResult(app, "download", False, f"Download error: {exc}")
         return OperationResult(app, "download", True, f"Downloaded {dest_path.name}")
+
+    def _download_chrome_direct(
+        self,
+        target_root: Path,
+        stem: str,
+        safe_version: str,
+        *,
+        status_callback: Callable[[str], None] | None = None,
+    ) -> Path:
+        url = _chrome_download_url()
+        dest_path = target_root / f"{stem}_{safe_version}.msi"
+        self._download_file(url, dest_path, status_callback=status_callback, label="Chrome")
+        _remove_versioned_files(target_root, stem, keep_name=dest_path.name)
+        return dest_path
 
     def _best_local_by_patterns(
         self,
@@ -1242,6 +1272,11 @@ def _safe_file_part(value: str) -> str:
     return cleaned or "unknown"
 
 
+def _winget_hash_mismatch(message: str) -> bool:
+    lowered = message.lower()
+    return "installer hash does not match" in lowered or "hash does not match" in lowered
+
+
 def _extract_version_from_filename(filename: str) -> str | None:
     match = re.search(r"_([0-9]+(?:\.[0-9]+){1,3})\.(exe|msi)$", filename, re.IGNORECASE)
     if match:
@@ -1373,6 +1408,12 @@ def _safe_name(name: str) -> str:
 
 def _is_64bit() -> bool:
     return sys.maxsize > 2**32
+
+
+def _chrome_download_url() -> str:
+    if _is_64bit():
+        return "https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise64.msi"
+    return "https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise.msi"
 
 
 def _filename_from_url(url: str) -> str | None:

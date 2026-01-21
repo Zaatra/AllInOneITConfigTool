@@ -179,6 +179,26 @@ class DummyDirectDownloader:
         return DirectDownloadInfo(version="1.2.3.4", url="https://example.com/ivms.exe", filename="ivms.exe")
 
 
+class HashMismatchWingetClient(DummyWingetClient):
+    def download_package(
+        self,
+        package_id: str,
+        destination: Path,
+        *,
+        source: str | None = None,
+        version: str | None = None,
+        force: bool = True,
+    ) -> CommandExecutionResult:  # type: ignore[override]
+        destination.mkdir(parents=True, exist_ok=True)
+        self.downloads.append((package_id, destination, version))
+        return CommandExecutionResult(
+            ["winget", "download", package_id],
+            1,
+            "",
+            "Installer hash does not match; this cannot be overridden when running as admin",
+        )
+
+
 def test_direct_download_uses_downloader(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     chrome_entry = AppEntry(
         category="Core",
@@ -202,6 +222,30 @@ def test_direct_download_uses_downloader(tmp_path: Path, monkeypatch: pytest.Mon
     assert downloader.fetch_count == 1
     downloads = list((tmp_path / "downloads").rglob("ivms.exe"))
     assert downloads, "Downloaded installer missing"
+
+
+def test_download_winget_hash_mismatch_falls_back_to_direct(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    chrome_entry = AppEntry(
+        category="Core",
+        name="Chrome",
+        download_mode="winget",
+        winget_id="Google.Chrome",
+    )
+    fake_client = HashMismatchWingetClient()
+
+    def fake_download(self: InstallerService, url: str, destination: Path, **kwargs) -> None:  # type: ignore[override]
+        destination.write_bytes(b"msi")
+
+    monkeypatch.setattr(InstallerService, "_download_file", fake_download, raising=False)
+    service = InstallerService(
+        [chrome_entry],
+        working_dir=tmp_path,
+        winget_client=fake_client,
+    )
+    result = service.download_selected(["Chrome"])[0]
+    assert result.success
+    downloaded = list((tmp_path / "downloads").rglob("chrome_1.2.3.4.msi"))
+    assert downloaded, "Expected direct fallback download after hash mismatch"
 
 
 def test_local_install_finds_installer(tmp_path: Path) -> None:
