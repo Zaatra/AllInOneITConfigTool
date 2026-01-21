@@ -1102,17 +1102,26 @@ def _download_file_with_final_url(
     status_callback: Callable[[str], None] | None = None,
     label: str | None = None,
 ) -> str:
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120",
-            "Accept": "*/*",
-            "Accept-Language": "en-US,en;q=0.9",
-        },
-    )
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    parsed = urllib.parse.urlparse(url)
+    referer = None
+    if "hikvision.com" in parsed.netloc.lower():
+        referer = IVMSDownloader.SERIES_URL
+        headers["Referer"] = referer
+        headers["Origin"] = "https://www.hikvision.com"
+    request = urllib.request.Request(url, headers=headers)
     destination.parent.mkdir(parents=True, exist_ok=True)
     cookie_jar = http.cookiejar.CookieJar()
     opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
+    if referer:
+        try:
+            opener.open(urllib.request.Request(referer, headers=headers), timeout=20).read(1)
+        except Exception:
+            pass
     with opener.open(request, timeout=60) as response, destination.open("wb") as handle:
         final_url = response.geturl()
         last_time = time.monotonic()

@@ -256,9 +256,16 @@ class AppStatusService:
     ) -> str | None:
         if not local_versions.has_any():
             return None
+        if app.winget_version and local_versions.version:
+            return "Latest" if _version_ge(local_versions.version, app.winget_version) else "Outdated"
         if self._latest_unknown(latest_text):
-            return None
-        if app.name == "HP Support Asst":
+            if app.download_mode == "direct" and local_versions.version and app.name in self._direct_downloaders:
+                latest_text = self._get_direct_latest(app.name)
+                if self._latest_unknown(latest_text):
+                    return None
+            else:
+                return None
+        if app.download_mode == "direct":
             latest_info = self._direct_latest_info.get(app.name)
             if latest_info and local_versions.path:
                 latest_filename = (latest_info.filename or "").strip()
@@ -505,6 +512,8 @@ class AppStatusService:
                 yield candidate
 
     def _get_latest_version(self, app: AppEntry) -> str:
+        if app.winget_version:
+            return app.winget_version
         if app.name == "Office 2024 LTSC":
             return self._get_office_latest("https://learn.microsoft.com/en-us/officeupdates/update-history-office-2024")
         if app.name == "Office 365 Ent":
