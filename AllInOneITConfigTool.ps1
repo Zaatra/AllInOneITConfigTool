@@ -215,6 +215,15 @@ function Normalize-VersionString {
     return $t
 }
 
+function Normalize-DeviceName {
+    param([string]$Name)
+    if ([string]::IsNullOrWhiteSpace($Name)) { return "" }
+    $n = $Name.ToLower()
+    $n = $n -replace 'wi-?fi', 'wifi'
+    $n = $n -replace '[^a-z0-9]+', ' '
+    return $n.Trim()
+}
+
 function To-VersionObj {
     param([string]$v)
     $n = Normalize-VersionString $v
@@ -239,6 +248,202 @@ function Enable-DoubleBuffer {
         $prop = $ctrl.GetType().GetProperty("DoubleBuffered", [Reflection.BindingFlags]"NonPublic,Instance")
         if ($prop) { $prop.SetValue($ctrl, $true, $null) }
     } catch {}
+}
+
+function New-DriverGrid {
+    param(
+        [System.Drawing.Color]$HeaderColor
+    )
+
+    $grid = New-Object System.Windows.Forms.DataGridView
+    $grid.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $grid.AllowUserToAddRows = $false
+    $grid.AllowUserToDeleteRows = $false
+    $grid.SelectionMode = [System.Windows.Forms.DataGridViewSelectionMode]::FullRowSelect
+    $grid.MultiSelect = $true
+    $grid.RowHeadersVisible = $false
+    $grid.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::None
+    $grid.BackgroundColor = [System.Drawing.Color]::White
+    $grid.BorderStyle = [System.Windows.Forms.BorderStyle]::Fixed3D
+    $grid.Font = $FontSmall
+    $grid.ScrollBars = [System.Windows.Forms.ScrollBars]::Both
+    $grid.AllowUserToResizeRows = $false
+    $grid.ColumnHeadersVisible = $true
+    $grid.ColumnHeadersHeightSizeMode = [System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode]::DisableResizing
+    $grid.ColumnHeadersHeight = 32
+    $grid.RowTemplate.Height = 28
+    $grid.DefaultCellStyle.Alignment = [System.Windows.Forms.DataGridViewContentAlignment]::MiddleLeft
+    $grid.DefaultCellStyle.Padding = New-Object System.Windows.Forms.Padding(3, 2, 3, 2)
+    $grid.AutoSizeRowsMode = [System.Windows.Forms.DataGridViewAutoSizeRowsMode]::None
+
+    Enable-DoubleBuffer $grid
+
+    $grid.DefaultCellStyle.SelectionBackColor = $grid.DefaultCellStyle.BackColor
+    $grid.DefaultCellStyle.SelectionForeColor = $grid.DefaultCellStyle.ForeColor
+
+    $colSelect = New-Object System.Windows.Forms.DataGridViewCheckBoxColumn
+    $colSelect.Name = "Select"
+    $colSelect.HeaderText = ""
+    $colSelect.Width = 35
+    $colSelect.AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::None
+    $colSelect.Resizable = [System.Windows.Forms.DataGridViewTriState]::False
+    $grid.Columns.Add($colSelect) | Out-Null
+
+    $colSource = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+    $colSource.Name = "Source"
+    $colSource.HeaderText = "Source"
+    $colSource.Width = 60
+    $colSource.AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::None
+    $colSource.ReadOnly = $true
+    $grid.Columns.Add($colSource) | Out-Null
+
+    $colStatus = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+    $colStatus.Name = "Status"
+    $colStatus.HeaderText = "Status"
+    $colStatus.Width = 110
+    $colStatus.AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::None
+    $colStatus.ReadOnly = $true
+    $grid.Columns.Add($colStatus) | Out-Null
+
+    $colName = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+    $colName.Name = "Name"
+    $colName.HeaderText = "Driver/Update Name"
+    $colName.MinimumWidth = 180
+    $colName.AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::Fill
+    $colName.FillWeight = 100
+    $colName.ReadOnly = $true
+    $grid.Columns.Add($colName) | Out-Null
+
+    $colCategory = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+    $colCategory.Name = "Category"
+    $colCategory.HeaderText = "Category"
+    $colCategory.Width = 110
+    $colCategory.AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::None
+    $colCategory.ReadOnly = $true
+    $grid.Columns.Add($colCategory) | Out-Null
+
+    $colInstalled = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+    $colInstalled.Name = "Installed"
+    $colInstalled.HeaderText = "Installed"
+    $colInstalled.Width = 105
+    $colInstalled.AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::None
+    $colInstalled.ReadOnly = $true
+    $grid.Columns.Add($colInstalled) | Out-Null
+
+    $colLatest = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+    $colLatest.Name = "Latest"
+    $colLatest.HeaderText = "Available"
+    $colLatest.Width = 105
+    $colLatest.AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::None
+    $colLatest.ReadOnly = $true
+    $grid.Columns.Add($colLatest) | Out-Null
+
+    $colSPID = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+    $colSPID.Name = "SoftPaqId"
+    $colSPID.HeaderText = "SoftPaq"
+    $colSPID.Width = 80
+    $colSPID.AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::None
+    $colSPID.ReadOnly = $true
+    $grid.Columns.Add($colSPID) | Out-Null
+
+    $grid.EnableHeadersVisualStyles = $false
+    $grid.ColumnHeadersDefaultCellStyle.BackColor = $HeaderColor
+    $grid.ColumnHeadersDefaultCellStyle.ForeColor = [System.Drawing.Color]::White
+    $grid.ColumnHeadersDefaultCellStyle.Font = $FontItem
+    $grid.ColumnHeadersDefaultCellStyle.Alignment = [System.Windows.Forms.DataGridViewContentAlignment]::MiddleLeft
+
+    return $grid
+}
+
+function Set-DriverRowStyle {
+    param($row, $drv)
+
+    $row.Cells["Source"].Style.Alignment = [System.Windows.Forms.DataGridViewContentAlignment]::MiddleCenter
+    $row.Cells["Source"].Style.Font = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
+
+    switch ($drv.Source) {
+        "HPIA" {
+            $row.Cells["Source"].Style.BackColor = [System.Drawing.Color]::FromArgb(0, 120, 215)
+            $row.Cells["Source"].Style.ForeColor = [System.Drawing.Color]::White
+        }
+        "CMSL" {
+            $row.Cells["Source"].Style.BackColor = [System.Drawing.Color]::FromArgb(0, 150, 136)
+            $row.Cells["Source"].Style.ForeColor = [System.Drawing.Color]::White
+        }
+        "Repo" {
+            $row.Cells["Source"].Style.BackColor = [System.Drawing.Color]::FromArgb(103, 58, 183)
+            $row.Cells["Source"].Style.ForeColor = [System.Drawing.Color]::White
+        }
+        default {
+            $row.Cells["Source"].Style.BackColor = [System.Drawing.Color]::FromArgb(96, 125, 139)
+            $row.Cells["Source"].Style.ForeColor = [System.Drawing.Color]::White
+        }
+    }
+
+    $row.Cells["Status"].Style.Alignment = [System.Windows.Forms.DataGridViewContentAlignment]::MiddleCenter
+    $row.Cells["Status"].Style.Font = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
+
+    switch -Regex ($drv.Status) {
+        "Critical" {
+            $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(255, 235, 238)
+            $row.Cells["Status"].Style.BackColor = [System.Drawing.Color]::FromArgb(211, 47, 47)
+            $row.Cells["Status"].Style.ForeColor = [System.Drawing.Color]::White
+        }
+        "Recommended" {
+            $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(255, 243, 224)
+            $row.Cells["Status"].Style.BackColor = [System.Drawing.Color]::FromArgb(245, 124, 0)
+            $row.Cells["Status"].Style.ForeColor = [System.Drawing.Color]::White
+        }
+        "Update Available" {
+            $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(255, 248, 225)
+            $row.Cells["Status"].Style.BackColor = [System.Drawing.Color]::FromArgb(255, 160, 0)
+            $row.Cells["Status"].Style.ForeColor = [System.Drawing.Color]::Black
+        }
+        "Not Installed|Not Found" {
+            $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(252, 228, 236)
+            $row.Cells["Status"].Style.BackColor = [System.Drawing.Color]::FromArgb(194, 24, 91)
+            $row.Cells["Status"].Style.ForeColor = [System.Drawing.Color]::White
+        }
+        "Optional" {
+            $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(227, 242, 253)
+            $row.Cells["Status"].Style.BackColor = [System.Drawing.Color]::FromArgb(33, 150, 243)
+            $row.Cells["Status"].Style.ForeColor = [System.Drawing.Color]::White
+        }
+        "Catalog|Available" {
+            $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(245, 245, 245)
+            $row.Cells["Status"].Style.BackColor = [System.Drawing.Color]::FromArgb(120, 144, 156)
+            $row.Cells["Status"].Style.ForeColor = [System.Drawing.Color]::White
+        }
+        "Up to Date|Installed" {
+            $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(232, 245, 233)
+            $row.Cells["Status"].Style.BackColor = [System.Drawing.Color]::FromArgb(56, 142, 60)
+            $row.Cells["Status"].Style.ForeColor = [System.Drawing.Color]::White
+        }
+        default {
+            $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(245, 245, 245)
+            $row.Cells["Status"].Style.BackColor = [System.Drawing.Color]::FromArgb(117, 117, 117)
+            $row.Cells["Status"].Style.ForeColor = [System.Drawing.Color]::White
+        }
+    }
+}
+
+function Add-DriverRow {
+    param($Grid, $drv)
+
+    $rowIdx = $Grid.Rows.Add()
+    $row = $Grid.Rows[$rowIdx]
+
+    $row.Cells["Select"].Value = $drv.Selected
+    $row.Cells["Source"].Value = $drv.Source
+    $row.Cells["Name"].Value = $drv.Name
+    $row.Cells["Category"].Value = $drv.Category
+    $row.Cells["Installed"].Value = $drv.InstalledVersion
+    $row.Cells["Latest"].Value = $drv.Version
+    $row.Cells["Status"].Value = $drv.Status
+    $row.Cells["SoftPaqId"].Value = $drv.SoftPaqId
+
+    Set-DriverRowStyle $row $drv
+    $row.Tag = $drv
 }
 
 function Set-RowColor {
@@ -761,6 +966,8 @@ function Find-InstalledVersion {
 
     $cache = $Global:InstalledDriversCache
     $driverLower = $DriverName.ToLower()
+    $driverNorm = Normalize-DeviceName $DriverName
+    $isWirelessDriver = ($driverNorm -match '\b(wlan|wifi|wireless)\b')
 
     # Extract key terms from driver name
     $searchTerms = @()
@@ -771,7 +978,7 @@ function Find-InstalledVersion {
     if ($driverLower -match 'nvidia') { $searchTerms += 'nvidia' }
     if ($driverLower -match 'amd') { $searchTerms += 'amd' }
     if ($driverLower -match 'bluetooth') { $searchTerms += 'bluetooth' }
-    if ($driverLower -match 'wireless|wlan|wifi') { $searchTerms += 'wireless', 'wlan', 'wifi' }
+    if ($driverLower -match 'wireless|wlan|wifi|wi-fi') { $searchTerms += 'wireless', 'wlan', 'wifi' }
     if ($driverLower -match 'graphics|video|display') { $searchTerms += 'graphics', 'video', 'display' }
     if ($driverLower -match 'audio|sound') { $searchTerms += 'audio', 'sound' }
     if ($driverLower -match 'ethernet|nic|network') { $searchTerms += 'ethernet', 'network' }
@@ -791,21 +998,25 @@ function Find-InstalledVersion {
 
     foreach ($item in $cache.GetEnumerator()) {
         $itemName = $item.Key
+        $itemNorm = Normalize-DeviceName $itemName
+        if ($isWirelessDriver -and $itemNorm -match '\bmanageability\b' -and $driverNorm -notmatch '\bmanageability\b') {
+            continue
+        }
         $score = 0
 
         foreach ($term in $searchTerms) {
-            if ($itemName -match [regex]::Escape($term)) {
+            if ($itemNorm -match [regex]::Escape($term)) {
                 $score++
             }
         }
 
         # Category-specific matching
-        if ($Category -match 'Graphics' -and $itemName -match 'graphics|display|video') { $score += 2 }
-        if ($Category -match 'Audio' -and $itemName -match 'audio|sound|realtek') { $score += 2 }
-        if ($Category -match 'Network' -and $itemName -match 'network|ethernet|wireless|wifi|bluetooth') { $score += 2 }
-        if ($Category -match 'Chipset' -and $itemName -match 'chipset|serial|management|usb') { $score += 2 }
-        if ($Category -match 'Storage' -and $itemName -match 'storage|rapid|rst|raid|optane') { $score += 2 }
-        if ($Category -match 'BIOS|Firmware' -and $itemName -match 'bios|firmware') { $score += 2 }
+        if ($Category -match 'Graphics' -and $itemNorm -match 'graphics|display|video') { $score += 2 }
+        if ($Category -match 'Audio' -and $itemNorm -match 'audio|sound|realtek') { $score += 2 }
+        if ($Category -match 'Network' -and $itemNorm -match 'network|ethernet|wireless|wifi|bluetooth') { $score += 2 }
+        if ($Category -match 'Chipset' -and $itemNorm -match 'chipset|serial|management|usb') { $score += 2 }
+        if ($Category -match 'Storage' -and $itemNorm -match 'storage|rapid|rst|raid|optane') { $score += 2 }
+        if ($Category -match 'BIOS|Firmware' -and $itemNorm -match 'bios|firmware') { $score += 2 }
 
         if ($score -gt $bestScore) {
             $bestScore = $score
@@ -1010,20 +1221,22 @@ function Scan-HPDrivers-HPIA {
 
             if ($report.HPIA.Recommendations) {
                 foreach ($rec in $report.HPIA.Recommendations) {
-                    $drivers += [PSCustomObject]@{
-                        Source = "HPIA"
-                        Name = $rec.Name
-                        Category = $rec.Category
-                        Version = $rec.Version
-                        InstalledVersion = $rec.CurrentVersion
-                        SoftPaqId = $rec.SoftPaqId
-                        Url = $rec.ReleaseNotesUrl
-                        Size = $rec.Size
-                        Status = if ($rec.RecommendationValue -eq "Critical") { "Critical" }
-                                 elseif ($rec.RecommendationValue -eq "Recommended") { "Recommended" }
-                                 else { "Optional" }
-                        Selected = ($rec.RecommendationValue -in @("Critical","Recommended"))
-                        FilePath = $null
+                    if ($rec.Category -match "Driver|BIOS|Firmware") {
+                        $drivers += [PSCustomObject]@{
+                            Source = "HPIA"
+                            Name = $rec.Name
+                            Category = $rec.Category
+                            Version = $rec.Version
+                            InstalledVersion = $rec.CurrentVersion
+                            SoftPaqId = $rec.SoftPaqId
+                            Url = $rec.ReleaseNotesUrl
+                            Size = $rec.Size
+                            Status = if ($rec.RecommendationValue -eq "Critical") { "Critical" }
+                                     elseif ($rec.RecommendationValue -eq "Recommended") { "Recommended" }
+                                     else { "Optional" }
+                            Selected = ($rec.RecommendationValue -in @("Critical","Recommended"))
+                            FilePath = $null
+                        }
                     }
                 }
             }
@@ -1064,18 +1277,17 @@ function Scan-HPDrivers-CMSL {
 
         if ($softpaqs) {
             foreach ($sp in $softpaqs) {
-                if ($sp.Category -match "Driver|BIOS|Firmware|Utility") {
-                    $status = Get-DriverInstallStatus -DriverName $sp.Name -Category $sp.Category -AvailableVersion $sp.Version
+                if ($sp.Category -match "Driver|BIOS|Firmware") {
                     $drivers += [PSCustomObject]@{
                         Source = "CMSL"
                         Name = $sp.Name
                         Category = $sp.Category
                         Version = $sp.Version
-                        InstalledVersion = $status.InstalledVersion
+                        InstalledVersion = ""
                         SoftPaqId = $sp.Id
                         Url = $sp.Url
                         Size = $sp.Size
-                        Status = $status.Status
+                        Status = "Catalog"
                         Selected = $false
                         FilePath = $null
                     }
@@ -1575,121 +1787,46 @@ $btnSelectNone.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
 $btnSelectNone.FlatAppearance.BorderColor = [System.Drawing.Color]::Gray
 $flowBtnRow2.Controls.Add($btnSelectNone)
 
-# === DRIVER DATAGRIDVIEW (FILL remaining space) ===
-$dgvDrivers = New-Object System.Windows.Forms.DataGridView
-$dgvDrivers.Dock = [System.Windows.Forms.DockStyle]::Fill
-$dgvDrivers.AllowUserToAddRows = $false
-$dgvDrivers.AllowUserToDeleteRows = $false
-$dgvDrivers.SelectionMode = [System.Windows.Forms.DataGridViewSelectionMode]::FullRowSelect
-$dgvDrivers.MultiSelect = $true
-$dgvDrivers.RowHeadersVisible = $false
-$dgvDrivers.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::None
-$dgvDrivers.BackgroundColor = [System.Drawing.Color]::White
-$dgvDrivers.BorderStyle = [System.Windows.Forms.BorderStyle]::Fixed3D
-$dgvDrivers.Font = $FontSmall
-$dgvDrivers.ScrollBars = [System.Windows.Forms.ScrollBars]::Both
-$dgvDrivers.AllowUserToResizeRows = $false
-$dgvDrivers.ColumnHeadersVisible = $true
+# === DRIVER LIST SPLIT (HPIA + CMSL) ===
+$splitDrivers = New-Object System.Windows.Forms.SplitContainer
+$splitDrivers.Dock = [System.Windows.Forms.DockStyle]::Fill
+$splitDrivers.Orientation = [System.Windows.Forms.Orientation]::Horizontal
+$splitDrivers.SplitterWidth = 6
+$splitDrivers.SplitterDistance = 280
+$splitDrivers.Panel1MinSize = 160
+$splitDrivers.Panel2MinSize = 160
+$splitDrivers.BackColor = [System.Drawing.Color]::White
 
-# Column headers config
-$dgvDrivers.ColumnHeadersHeightSizeMode = [System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode]::DisableResizing
-$dgvDrivers.ColumnHeadersHeight = 32
+$grpHPIA = New-Object System.Windows.Forms.GroupBox
+$grpHPIA.Text = "HPIA Recommended Drivers"
+$grpHPIA.Dock = [System.Windows.Forms.DockStyle]::Fill
+$grpHPIA.Padding = New-Object System.Windows.Forms.Padding(6)
 
-# Row configuration
-$dgvDrivers.RowTemplate.Height = 28
-$dgvDrivers.DefaultCellStyle.Alignment = [System.Windows.Forms.DataGridViewContentAlignment]::MiddleLeft
-$dgvDrivers.DefaultCellStyle.Padding = New-Object System.Windows.Forms.Padding(3, 2, 3, 2)
-$dgvDrivers.AutoSizeRowsMode = [System.Windows.Forms.DataGridViewAutoSizeRowsMode]::None
+$dgvHPIA = New-DriverGrid -HeaderColor ([System.Drawing.Color]::FromArgb(0, 120, 215))
+$grpHPIA.Controls.Add($dgvHPIA)
+$splitDrivers.Panel1.Controls.Add($grpHPIA)
 
-Enable-DoubleBuffer $dgvDrivers
+$grpCMSL = New-Object System.Windows.Forms.GroupBox
+$grpCMSL.Text = "CMSL Catalog (All Drivers)"
+$grpCMSL.Dock = [System.Windows.Forms.DockStyle]::Fill
+$grpCMSL.Padding = New-Object System.Windows.Forms.Padding(6)
 
-# Disable selection highlight (keep row colors visible)
-$dgvDrivers.DefaultCellStyle.SelectionBackColor = $dgvDrivers.DefaultCellStyle.BackColor
-$dgvDrivers.DefaultCellStyle.SelectionForeColor = $dgvDrivers.DefaultCellStyle.ForeColor
+$dgvCMSL = New-DriverGrid -HeaderColor ([System.Drawing.Color]::FromArgb(0, 150, 136))
+$grpCMSL.Controls.Add($dgvCMSL)
+$splitDrivers.Panel2.Controls.Add($grpCMSL)
 
-# === DEFINE COLUMNS ===
-$colSelect = New-Object System.Windows.Forms.DataGridViewCheckBoxColumn
-$colSelect.Name = "Select"
-$colSelect.HeaderText = ""
-$colSelect.Width = 35
-$colSelect.AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::None
-$colSelect.Resizable = [System.Windows.Forms.DataGridViewTriState]::False
-$dgvDrivers.Columns.Add($colSelect) | Out-Null
-
-$colSource = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
-$colSource.Name = "Source"
-$colSource.HeaderText = "Source"
-$colSource.Width = 55
-$colSource.AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::None
-$colSource.ReadOnly = $true
-$dgvDrivers.Columns.Add($colSource) | Out-Null
-
-$colStatus = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
-$colStatus.Name = "Status"
-$colStatus.HeaderText = "Status"
-$colStatus.Width = 100
-$colStatus.AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::None
-$colStatus.ReadOnly = $true
-$dgvDrivers.Columns.Add($colStatus) | Out-Null
-
-$colName = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
-$colName.Name = "Name"
-$colName.HeaderText = "Driver/Update Name"
-$colName.MinimumWidth = 180
-$colName.AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::Fill
-$colName.FillWeight = 100
-$colName.ReadOnly = $true
-$dgvDrivers.Columns.Add($colName) | Out-Null
-
-$colCategory = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
-$colCategory.Name = "Category"
-$colCategory.HeaderText = "Category"
-$colCategory.Width = 100
-$colCategory.AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::None
-$colCategory.ReadOnly = $true
-$dgvDrivers.Columns.Add($colCategory) | Out-Null
-
-$colInstalled = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
-$colInstalled.Name = "Installed"
-$colInstalled.HeaderText = "Installed"
-$colInstalled.Width = 95
-$colInstalled.AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::None
-$colInstalled.ReadOnly = $true
-$dgvDrivers.Columns.Add($colInstalled) | Out-Null
-
-$colLatest = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
-$colLatest.Name = "Latest"
-$colLatest.HeaderText = "Available"
-$colLatest.Width = 95
-$colLatest.AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::None
-$colLatest.ReadOnly = $true
-$dgvDrivers.Columns.Add($colLatest) | Out-Null
-
-$colSPID = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
-$colSPID.Name = "SoftPaqId"
-$colSPID.HeaderText = "SoftPaq"
-$colSPID.Width = 70
-$colSPID.AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::None
-$colSPID.ReadOnly = $true
-$dgvDrivers.Columns.Add($colSPID) | Out-Null
-
-# Style the grid headers
-$dgvDrivers.EnableHeadersVisualStyles = $false
-$dgvDrivers.ColumnHeadersDefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(0, 100, 0)
-$dgvDrivers.ColumnHeadersDefaultCellStyle.ForeColor = [System.Drawing.Color]::White
-$dgvDrivers.ColumnHeadersDefaultCellStyle.Font = $FontItem
-$dgvDrivers.ColumnHeadersDefaultCellStyle.Alignment = [System.Windows.Forms.DataGridViewContentAlignment]::MiddleLeft
+$Global:DriverGrids = @($dgvHPIA, $dgvCMSL)
 
 # === ADD CONTROLS TO MAIN CONTAINER IN CORRECT ORDER ===
 # Order matters for docking: Bottom items first, then Top, then Fill
-$pnlDriverMain.Controls.Add($dgvDrivers)           # Fill - added first, gets remaining space
+$pnlDriverMain.Controls.Add($splitDrivers)           # Fill - added first, gets remaining space
 $pnlDriverMain.Controls.Add($pnlDriverLogContainer) # Bottom
 $pnlDriverMain.Controls.Add($pnlDriverButtons)     # Bottom (above log)
 $pnlDriverMain.Controls.Add($pnlDriverInfo)        # Top
 
 # Ensure proper z-order by sending to back/front
 $pnlDriverInfo.SendToBack()
-$dgvDrivers.SendToBack()
+$splitDrivers.SendToBack()
 $pnlDriverButtons.BringToFront()
 $pnlDriverLogContainer.BringToFront()
 
@@ -2028,52 +2165,31 @@ function Refresh-DriverSystemInfo {
 }
 
 function Update-DriverCounts {
-    $upToDate = 0
-    $needsUpdate = 0
-    $notInstalled = 0
+    $critical = 0
+    $recommended = 0
     $optional = 0
-    $hpiaCount = 0
-    $cmslCount = 0
-    $repoCount = 0
 
-    foreach ($row in $dgvDrivers.Rows) {
+    foreach ($row in $dgvHPIA.Rows) {
         $status = $row.Cells["Status"].Value
-        $source = $row.Cells["Source"].Value
-
         switch -Regex ($status) {
-            "Up to Date|Installed" { $upToDate++ }
-            "Update Available|Critical|Recommended" { $needsUpdate++ }
-            "Not Installed|Not Found" { $notInstalled++ }
+            "Critical" { $critical++ }
+            "Recommended" { $recommended++ }
             "Optional" { $optional++ }
-        }
-
-        switch ($source) {
-            "HPIA" { $hpiaCount++ }
-            "CMSL" { $cmslCount++ }
-            "Repo" { $repoCount++ }
         }
     }
 
-    $total = $dgvDrivers.Rows.Count
+    $hpiaTotal = $dgvHPIA.Rows.Count
+    $cmslTotal = $dgvCMSL.Rows.Count
 
-    # Build source summary
-    $sourceParts = @()
-    if ($hpiaCount -gt 0) { $sourceParts += "HPIA: $hpiaCount" }
-    if ($cmslCount -gt 0) { $sourceParts += "CMSL: $cmslCount" }
-    if ($repoCount -gt 0) { $sourceParts += "Repo: $repoCount" }
-    $sourceInfo = if ($sourceParts.Count -gt 0) { " [$($sourceParts -join ', ')]" } else { "" }
-
-    $lblDriverCounts.Text = "Total: $total$sourceInfo  |  " +
-        "Installed: $upToDate  |  " +
-        "Updates: $needsUpdate  |  " +
-        "Missing: $notInstalled  |  " +
-        "Optional: $optional"
+    $lblDriverCounts.Text = "HPIA: $hpiaTotal (Critical: $critical | Recommended: $recommended | Optional: $optional)  |  " +
+        "CMSL Catalog: $cmslTotal"
 
     $lblDriverCounts.ForeColor = [System.Drawing.Color]::Black
 }
 
 function Scan-Drivers {
-    $dgvDrivers.Rows.Clear()
+    $dgvHPIA.Rows.Clear()
+    $dgvCMSL.Rows.Clear()
     $Global:HPDriverList = @()
     $Global:InstalledDriversCache = $null
 
@@ -2087,20 +2203,11 @@ function Scan-Drivers {
     $btnScanDrivers.Text = "Scanning..."
 
     try {
-        Log-Driver "Building installed software/drivers cache..."
-        $Global:InstalledDriversCache = Get-InstalledDriversAndSoftware
-        Log-Driver "Found $($Global:InstalledDriversCache.Count) installed items."
-
-        $allDrivers = @()
+        $hpiaDrivers = @()
+        $cmslDrivers = @()
         $scannedSources = @()
 
-        # ----------------------------------------
-        # UNIFIED SCANNING - Try ALL available sources
-        # Priority: HPIA → CMSL → Legacy Repository
-        # ----------------------------------------
-
-        # --- 1. HPIA SCAN (Best for modern HP systems) ---
-        $hpiaSuccess = $false
+        # --- 1. HPIA Recommended (authoritative) ---
         if ($si.SupportsHPIA) {
             Log-Driver "[HPIA] System supports HP Image Assistant - attempting scan..."
             try {
@@ -2113,9 +2220,7 @@ function Scan-Drivers {
                 if ($hpiaPath -and (Test-Path $hpiaPath)) {
                     $hpiaDrivers = Scan-HPDrivers-HPIA -HPIAPath $hpiaPath
                     if ($hpiaDrivers.Count -gt 0) {
-                        $allDrivers += $hpiaDrivers
                         $scannedSources += "HPIA"
-                        $hpiaSuccess = $true
                         Log-Driver "[HPIA] Found $($hpiaDrivers.Count) driver recommendations."
                     } else {
                         Log-Driver "[HPIA] Scan completed but found no recommendations."
@@ -2130,27 +2235,14 @@ function Scan-Drivers {
             Log-Driver "[HPIA] System does not support HP Image Assistant (requires G3+ generation)."
         }
 
-        # --- 2. CMSL SCAN (HP Client Management Script Library) ---
+        # --- 2. CMSL Catalog (list all, no comparison) ---
         if ($si.SupportsCMSL -and $si.ProductCode) {
-            Log-Driver "[CMSL] Attempting HP CMSL scan for platform: $($si.ProductCode)..."
+            Log-Driver "[CMSL] Attempting HP CMSL catalog for platform: $($si.ProductCode)..."
             try {
                 $cmslDrivers = Scan-HPDrivers-CMSL -Platform $si.ProductCode
                 if ($cmslDrivers.Count -gt 0) {
-                    # Deduplicate against HPIA results
-                    $existingIds = $allDrivers | ForEach-Object { $_.SoftPaqId } | Where-Object { $_ }
-                    $newCmsl = @()
-                    foreach ($cd in $cmslDrivers) {
-                        if ($cd.SoftPaqId -notin $existingIds) {
-                            $newCmsl += $cd
-                        }
-                    }
-                    if ($newCmsl.Count -gt 0) {
-                        $allDrivers += $newCmsl
-                        $scannedSources += "CMSL"
-                        Log-Driver "[CMSL] Found $($newCmsl.Count) additional drivers (after deduplication)."
-                    } else {
-                        Log-Driver "[CMSL] All CMSL drivers already covered by HPIA."
-                    }
+                    $scannedSources += "CMSL"
+                    Log-Driver "[CMSL] Found $($cmslDrivers.Count) catalog entries."
                 } else {
                     Log-Driver "[CMSL] Scan completed but found no drivers."
                 }
@@ -2163,9 +2255,8 @@ function Scan-Drivers {
             Log-Driver "[CMSL] Cannot scan - no platform code available."
         }
 
-        # --- 3. LEGACY REPOSITORY (Offline fallback for old systems) ---
-        # Only use if online scanning found nothing OR for legacy systems
-        $tryLegacy = (-not $si.SupportsHPIA -and -not $si.SupportsCMSL) -or ($allDrivers.Count -eq 0)
+        # --- 3. Legacy Repository (fallback if nothing found) ---
+        $tryLegacy = (-not $si.SupportsHPIA -and -not $si.SupportsCMSL) -or (($hpiaDrivers.Count + $cmslDrivers.Count) -eq 0)
 
         if ($tryLegacy) {
             Log-Driver "[REPO] Checking offline legacy repository..."
@@ -2175,28 +2266,17 @@ function Scan-Drivers {
 
                     if ($repoPackages.Count -gt 0) {
                         Log-Driver "[REPO] Found $($repoPackages.Count) packages in legacy repository."
-                        $existingIds = $allDrivers | ForEach-Object { $_.SoftPaqId } | Where-Object { $_ }
-
                         foreach ($pkg in $repoPackages) {
-                            # Skip if already found via HPIA/CMSL
-                            if ($pkg.SoftPaqId -in $existingIds) { continue }
-
-                            $status = Get-DriverInstallStatus -DriverName $pkg.Name -Category $pkg.Category -AvailableVersion $pkg.Version
-
-                            if ($pkg.Category -match "BIOS") {
-                                if ($status.Status -eq "Update Available") { $status.Status = "Critical" }
-                            }
-
-                            $allDrivers += [PSCustomObject]@{
+                            $cmslDrivers += [PSCustomObject]@{
                                 Source = "Repo"
                                 Name = $pkg.Name
                                 Category = $pkg.Category
                                 Version = $pkg.Version
-                                InstalledVersion = $status.InstalledVersion
+                                InstalledVersion = ""
                                 SoftPaqId = $pkg.SoftPaqId
                                 Url = (Join-Path $pkg._RepoPath "SoftPaqs\$($pkg.FileName)")
                                 Size = "Local"
-                                Status = $status.Status
+                                Status = "Catalog"
                                 Selected = $false
                                 FilePath = $null
                             }
@@ -2214,163 +2294,69 @@ function Scan-Drivers {
             }
         }
 
-        # Log scan summary
         if ($scannedSources.Count -gt 0) {
             Log-Driver "Scan sources used: $($scannedSources -join ', ')"
         } else {
             Log-Driver "Warning: No scan sources were successful. Check system compatibility and network access."
         }
 
-        # Sort: Critical > Update Available > Not Installed > Up to Date
         $sortOrder = @{
             "Critical" = 0
             "Recommended" = 1
-            "Update Available" = 2
-            "Not Installed" = 3
-            "Not Found" = 3
-            "Optional" = 4
-            "Available" = 4
-            "Up to Date" = 5
-            "Installed" = 5
+            "Optional" = 2
         }
 
-        $allDrivers = $allDrivers | Sort-Object {
+        $hpiaDrivers = $hpiaDrivers | Sort-Object {
             $order = $sortOrder[$_.Status]
             if ($null -eq $order) { $order = 99 }
             $order
         }, Name
 
-        $Global:HPDriverList = $allDrivers
+        $cmslDrivers = $cmslDrivers | Sort-Object Category, Name
 
-        # Populate grid
-        $dgvDrivers.SuspendLayout()
-        
-        foreach ($drv in $allDrivers) {
-            $rowIdx = $dgvDrivers.Rows.Add()
-            $row = $dgvDrivers.Rows[$rowIdx]
+        $Global:HPDriverList = $hpiaDrivers + $cmslDrivers
 
-            $row.Cells["Select"].Value = $drv.Selected
-            $row.Cells["Source"].Value = $drv.Source
-            $row.Cells["Name"].Value = $drv.Name
-            $row.Cells["Category"].Value = $drv.Category
-            $row.Cells["Installed"].Value = $drv.InstalledVersion
-            $row.Cells["Latest"].Value = $drv.Version
-            $row.Cells["Status"].Value = $drv.Status
-            $row.Cells["SoftPaqId"].Value = $drv.SoftPaqId
-
-            # ============================================
-            # SOURCE BADGE COLORS (Distinct badge styling)
-            # ============================================
-            # Center-align source cells for badge effect
-            $row.Cells["Source"].Style.Alignment = [System.Windows.Forms.DataGridViewContentAlignment]::MiddleCenter
-            $row.Cells["Source"].Style.Font = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
-
-            switch ($drv.Source) {
-                "HPIA" {
-                    # Blue badge - HP Image Assistant (recommended/modern)
-                    $row.Cells["Source"].Style.BackColor = [System.Drawing.Color]::FromArgb(0, 120, 215)
-                    $row.Cells["Source"].Style.ForeColor = [System.Drawing.Color]::White
-                }
-                "CMSL" {
-                    # Teal/Cyan badge - HP Command Line Script Library
-                    $row.Cells["Source"].Style.BackColor = [System.Drawing.Color]::FromArgb(0, 150, 136)
-                    $row.Cells["Source"].Style.ForeColor = [System.Drawing.Color]::White
-                }
-                "Repo" {
-                    # Purple badge - Offline/Legacy Repository
-                    $row.Cells["Source"].Style.BackColor = [System.Drawing.Color]::FromArgb(103, 58, 183)
-                    $row.Cells["Source"].Style.ForeColor = [System.Drawing.Color]::White
-                }
-                default {
-                    # Gray badge - Unknown source
-                    $row.Cells["Source"].Style.BackColor = [System.Drawing.Color]::FromArgb(96, 125, 139)
-                    $row.Cells["Source"].Style.ForeColor = [System.Drawing.Color]::White
-                }
-            }
-
-            # ============================================
-            # STATUS BADGE COLORS (Clear visual hierarchy)
-            # ============================================
-            # Center-align status cells for badge effect
-            $row.Cells["Status"].Style.Alignment = [System.Windows.Forms.DataGridViewContentAlignment]::MiddleCenter
-            $row.Cells["Status"].Style.Font = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
-
-            switch -Regex ($drv.Status) {
-                "Critical" {
-                    # RED - Critical/Security updates (highest priority)
-                    $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(255, 235, 238)
-                    $row.Cells["Status"].Style.BackColor = [System.Drawing.Color]::FromArgb(211, 47, 47)
-                    $row.Cells["Status"].Style.ForeColor = [System.Drawing.Color]::White
-                }
-                "Recommended" {
-                    # ORANGE - Recommended updates from HPIA
-                    $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(255, 243, 224)
-                    $row.Cells["Status"].Style.BackColor = [System.Drawing.Color]::FromArgb(245, 124, 0)
-                    $row.Cells["Status"].Style.ForeColor = [System.Drawing.Color]::White
-                }
-                "Update Available" {
-                    # AMBER - Updates available from CMSL/Repo
-                    $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(255, 248, 225)
-                    $row.Cells["Status"].Style.BackColor = [System.Drawing.Color]::FromArgb(255, 160, 0)
-                    $row.Cells["Status"].Style.ForeColor = [System.Drawing.Color]::Black
-                }
-                "Not Installed|Not Found" {
-                    # PINK/ROSE - Not installed (needs attention)
-                    $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(252, 228, 236)
-                    $row.Cells["Status"].Style.BackColor = [System.Drawing.Color]::FromArgb(194, 24, 91)
-                    $row.Cells["Status"].Style.ForeColor = [System.Drawing.Color]::White
-                }
-                "Optional" {
-                    # LIGHT BLUE - Optional updates (low priority, still visible)
-                    $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(227, 242, 253)
-                    $row.Cells["Status"].Style.BackColor = [System.Drawing.Color]::FromArgb(33, 150, 243)
-                    $row.Cells["Status"].Style.ForeColor = [System.Drawing.Color]::White
-                }
-                "Up to Date|Installed" {
-                    # GREEN - Installed/Up to date (good state)
-                    $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(232, 245, 233)
-                    $row.Cells["Status"].Style.BackColor = [System.Drawing.Color]::FromArgb(56, 142, 60)
-                    $row.Cells["Status"].Style.ForeColor = [System.Drawing.Color]::White
-                }
-                default {
-                    # GRAY - Unknown status
-                    $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(245, 245, 245)
-                    $row.Cells["Status"].Style.BackColor = [System.Drawing.Color]::FromArgb(117, 117, 117)
-                    $row.Cells["Status"].Style.ForeColor = [System.Drawing.Color]::White
-                }
-            }
-
-            $row.Tag = $drv
+        $dgvHPIA.SuspendLayout()
+        foreach ($drv in $hpiaDrivers) {
+            Add-DriverRow -Grid $dgvHPIA -drv $drv
         }
+        $dgvHPIA.ResumeLayout($true)
 
-        $dgvDrivers.ResumeLayout($true)
-        
-        # Force refresh and layout recalculation
-        $dgvDrivers.Refresh()
-        $dgvDrivers.Invalidate()
+        $dgvCMSL.SuspendLayout()
+        foreach ($drv in $cmslDrivers) {
+            Add-DriverRow -Grid $dgvCMSL -drv $drv
+        }
+        $dgvCMSL.ResumeLayout($true)
+
+        $dgvHPIA.Refresh()
+        $dgvHPIA.Invalidate()
+        $dgvCMSL.Refresh()
+        $dgvCMSL.Invalidate()
         [System.Windows.Forms.Application]::DoEvents()
 
         Update-DriverCounts
-        
-        Log-Driver "Scan complete. Found $($allDrivers.Count) drivers/updates."
-        # === REMOVE AUTO-SELECTION ===
-        $dgvDrivers.ClearSelection()
-        $dgvDrivers.CurrentCell = $null
-        # === END ===
+        Log-Driver "Scan complete. HPIA: $($hpiaDrivers.Count) | CMSL/Repo: $($cmslDrivers.Count)."
+
+        $dgvHPIA.ClearSelection()
+        $dgvHPIA.CurrentCell = $null
+        $dgvCMSL.ClearSelection()
+        $dgvCMSL.CurrentCell = $null
 
     } catch {
-
         Log-Driver "Scan error: $_"
     } finally {
         $btnScanDrivers.Enabled = $true
         $btnScanDrivers.Text = "SCAN FOR DRIVERS"
     }
 }
+
 function Download-SelectedDrivers {
     $selected = @()
-    foreach ($row in $dgvDrivers.Rows) {
-        if ($row.Cells["Select"].Value -eq $true) {
-            $selected += $row.Tag
+    foreach ($grid in $Global:DriverGrids) {
+        foreach ($row in $grid.Rows) {
+            if ($row.Cells["Select"].Value -eq $true) {
+                $selected += $row.Tag
+            }
         }
     }
 
@@ -2411,9 +2397,11 @@ function Download-SelectedDrivers {
 
 function Install-SelectedDrivers {
     $selected = @()
-    foreach ($row in $dgvDrivers.Rows) {
-        if ($row.Cells["Select"].Value -eq $true) {
-            $selected += $row.Tag
+    foreach ($grid in $Global:DriverGrids) {
+        foreach ($row in $grid.Rows) {
+            if ($row.Cells["Select"].Value -eq $true) {
+                $selected += $row.Tag
+            }
         }
     }
 
@@ -2754,36 +2742,40 @@ $btnDownloadDrivers.Add_Click({ Download-SelectedDrivers })
 $btnInstallDrivers.Add_Click({ Install-SelectedDrivers })
 
 $btnSelectAll.Add_Click({
-    foreach ($row in $dgvDrivers.Rows) { $row.Cells["Select"].Value = $true }
+    foreach ($grid in $Global:DriverGrids) {
+        foreach ($row in $grid.Rows) { $row.Cells["Select"].Value = $true }
+    }
 })
 
 $btnSelectNone.Add_Click({
-    foreach ($row in $dgvDrivers.Rows) { $row.Cells["Select"].Value = $false }
+    foreach ($grid in $Global:DriverGrids) {
+        foreach ($row in $grid.Rows) { $row.Cells["Select"].Value = $false }
+    }
 })
 
 $btnSelectNeedsUpdate.Add_Click({
-    foreach ($row in $dgvDrivers.Rows) {
+    foreach ($row in $dgvHPIA.Rows) {
         $status = $row.Cells["Status"].Value
         $row.Cells["Select"].Value = ($status -match "Update Available|Critical|Recommended")
     }
 })
 
 $btnSelectNotInstalled.Add_Click({
-    foreach ($row in $dgvDrivers.Rows) {
+    foreach ($row in $dgvHPIA.Rows) {
         $status = $row.Cells["Status"].Value
         $row.Cells["Select"].Value = ($status -match "Not Installed|Not Found")
     }
 })
 
 $btnSelectInstalled.Add_Click({
-    foreach ($row in $dgvDrivers.Rows) {
+    foreach ($row in $dgvHPIA.Rows) {
         $status = $row.Cells["Status"].Value
         $row.Cells["Select"].Value = ($status -match "Up to Date|Installed")
     }
 })
 
 $btnSelectOptional.Add_Click({
-    foreach ($row in $dgvDrivers.Rows) {
+    foreach ($row in $dgvHPIA.Rows) {
         $status = $row.Cells["Status"].Value
         $row.Cells["Select"].Value = ($status -eq "Optional")
     }

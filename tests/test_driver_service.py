@@ -11,6 +11,8 @@ from services.drivers import (
     DriverRecord,
     DriverService,
     HPSystemInfo,
+    InstalledItem,
+    find_installed_version,
 )
 
 
@@ -145,3 +147,20 @@ def test_install_runs_downloaded_packages(tmp_path: Path) -> None:
     results = service.install([record])
     assert results[0].success
     assert (str(record.output_path), "/s") in runner.commands
+
+
+def test_find_installed_version_avoids_manageability_for_wlan() -> None:
+    installed_cache = {
+        "intel(r) wireless manageability": InstalledItem(
+            name="Intel(R) Wireless Manageability",
+            version="2536.98.121.0",
+            publisher="Intel",
+        ),
+        "intel(r) wi-fi 6e ax211 160mhz": InstalledItem(
+            name="Intel(R) Wi-Fi 6E AX211 160MHz",
+            version="23.70.1.1",
+            publisher="Intel",
+        ),
+    }
+    result = find_installed_version("Intel WLAN Driver", "Network", installed_cache)
+    assert result == "23.70.1.1"

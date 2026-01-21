@@ -73,9 +73,9 @@ def _normalize_version(version_str: str | None) -> str:
     return ".".join(parts[:4])
 
 
-def _compare_versions(installed: str | None, available: str | None) -> int:
+def _compare_versions(installed: str | None, available: str | None) -> int | None:
     if not installed or not available:
-        return 0
+        return None
     norm_installed = _normalize_version(installed)
     norm_available = _normalize_version(available)
     try:
@@ -87,7 +87,14 @@ def _compare_versions(installed: str | None, available: str | None) -> int:
             return -1
         return 0
     except (ValueError, AttributeError):
-        return 0
+        return None
+
+
+def _normalize_name(value: str) -> str:
+    text = value.lower()
+    text = text.replace("wi-fi", "wifi").replace("wi fi", "wifi")
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return text.strip()
 
 
 def get_hp_system_info(*, powershell: str = "powershell") -> HPSystemInfo:
@@ -212,6 +219,7 @@ def get_installed_drivers_and_software(*, powershell: str = "powershell") -> dic
 
 def find_installed_version(driver_name: str, category: str | None, installed_cache: dict[str, InstalledItem]) -> str | None:
     driver_lower = driver_name.lower()
+    driver_norm = _normalize_name(driver_name)
     search_terms: list[str] = []
     if "intel" in driver_lower:
         search_terms.append("intel")
@@ -223,7 +231,7 @@ def find_installed_version(driver_name: str, category: str | None, installed_cac
         search_terms.append("amd")
     if "bluetooth" in driver_lower:
         search_terms.append("bluetooth")
-    if re.search(r"wireless|wlan|wifi", driver_lower):
+    if re.search(r"wireless|wlan|wifi|wi-fi", driver_lower):
         search_terms.extend(["wireless", "wlan", "wifi"])
     if re.search(r"graphics|video|display", driver_lower):
         search_terms.extend(["graphics", "video", "display"])
@@ -249,26 +257,30 @@ def find_installed_version(driver_name: str, category: str | None, installed_cac
         search_terms.append("arc")
     if "usb 3" in driver_lower:
         search_terms.append("usb 3")
+    is_wireless_driver = bool(re.search(r"\b(wlan|wifi|wireless)\b", driver_norm))
     best_match: InstalledItem | None = None
     best_score = 0
     for item_name, item_data in installed_cache.items():
+        item_norm = _normalize_name(item_name)
+        if is_wireless_driver and "manageability" in item_norm and "manageability" not in driver_norm:
+            continue
         score = 0
         for term in search_terms:
-            if term in item_name:
+            if term in item_norm:
                 score += 1
         if category:
             cat_lower = category.lower()
-            if "graphics" in cat_lower and re.search(r"graphics|display|video", item_name):
+            if "graphics" in cat_lower and re.search(r"graphics|display|video", item_norm):
                 score += 2
-            if "audio" in cat_lower and re.search(r"audio|sound|realtek", item_name):
+            if "audio" in cat_lower and re.search(r"audio|sound|realtek", item_norm):
                 score += 2
-            if "network" in cat_lower and re.search(r"network|ethernet|wireless|wifi|bluetooth", item_name):
+            if "network" in cat_lower and re.search(r"network|ethernet|wireless|wifi|bluetooth", item_norm):
                 score += 2
-            if "chipset" in cat_lower and re.search(r"chipset|serial|management|usb", item_name):
+            if "chipset" in cat_lower and re.search(r"chipset|serial|management|usb", item_norm):
                 score += 2
-            if "storage" in cat_lower and re.search(r"storage|rapid|rst|raid|optane", item_name):
+            if "storage" in cat_lower and re.search(r"storage|rapid|rst|raid|optane", item_norm):
                 score += 2
-            if re.search(r"bios|firmware", cat_lower) and re.search(r"bios|firmware", item_name):
+            if re.search(r"bios|firmware", cat_lower) and re.search(r"bios|firmware", item_norm):
                 score += 2
         if score > best_score:
             best_score = score
@@ -283,6 +295,8 @@ def get_driver_status(driver_name: str, category: str | None, available_version:
     if not installed_ver:
         return ("Not Installed", None)
     cmp_result = _compare_versions(installed_ver, available_version)
+    if cmp_result is None:
+        return ("Installed", installed_ver)
     if cmp_result > 0:
         return ("Update Available", installed_ver)
     if cmp_result == 0:
