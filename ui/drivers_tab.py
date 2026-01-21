@@ -1,7 +1,11 @@
 """Drivers tab UI for scanning/downloading/installing HP drivers."""
 from __future__ import annotations
 
+import os
+import re
+import subprocess
 from pathlib import Path
+from pathlib import PureWindowsPath
 from typing import Callable, Iterable, List
 
 from PySide6.QtCore import Qt, QThreadPool
@@ -25,6 +29,7 @@ from allinone_it_config.paths import get_application_directory
 from allinone_it_config.user_settings import SettingsStore, UserSettings
 from services.drivers import DriverOperationResult, DriverRecord, DriverService
 from ui.driver_settings_dialog import DriverSettingsDialog
+from ui.legacy_credentials_dialog import LegacyCredentialsDialog
 from ui.workers import ServiceWorker
 
 LogCallback = Callable[[str], None]
@@ -51,6 +56,7 @@ class DriversTab(QWidget):
         self._view_by_source: dict[str, list[DriverRecord]] = {"HPIA": [], "CMSL": [], "LEGACY": []}
         self._workers: set[ServiceWorker] = set()
         self._busy = False
+        self._last_action: tuple[str, str] | None = None
         self._build_ui()
 
     def _track_worker(self, worker: ServiceWorker) -> None:
@@ -157,6 +163,7 @@ class DriversTab(QWidget):
             return
         self._refresh_service()
         self._busy = True
+        self._last_action = ("scan", source)
         self._set_buttons_enabled(False)
         self._log(f"Scanning {source} drivers...")
         if source == "HPIA":
@@ -191,6 +198,7 @@ class DriversTab(QWidget):
             QMessageBox.information(self, "No Selection", "Select at least one driver entry.")
             return
         self._busy = True
+        self._last_action = (op, source)
         self._set_buttons_enabled(False)
         action = self._service.download if op == "download" else self._service.install
         self._log(f"Running {op} for {len(selected)} driver(s) from {source}...")
@@ -268,9 +276,78 @@ class DriversTab(QWidget):
                     button.setEnabled(enabled)
 
     def _handle_error(self, message: str) -> None:
-        self._log(f"[ERROR] {message}")
         self._busy = False
         self._set_buttons_enabled(True)
+        if self._maybe_prompt_legacy_credentials(message):
+            return
+        self._log(f"[ERROR] {message}")
+
+    def _maybe_prompt_legacy_credentials(self, message: str) -> bool:
+        if not self._looks_like_legacy_auth_error(message):
+            return False
+        legacy_root = self._settings.hp_legacy_repo_root.strip()
+        if not legacy_root:
+            return False
+        share_path = self._extract_unc_path(message) or legacy_root
+        share_root = self._unc_share_root(share_path) or share_path
+        if not share_root.startswith("\\\\"):
+            return False
+        self._log("[WARN] Legacy repository requires credentials.")
+        dialog = LegacyCredentialsDialog(share_root, self)
+        if not dialog.exec():
+            self._log("[WARN] Legacy repository credentials not provided.")
+            return True
+        username, password = dialog.credentials()
+        if not username or not password:
+            QMessageBox.warning(self, "Missing Credentials", "Enter both a username and password.")
+            return True
+        success, detail = self._connect_to_share(share_root, username, password)
+        if not success:
+            QMessageBox.critical(self, "Legacy Repo Authentication Failed", detail)
+            self._log(f"[ERROR] Legacy repo authentication failed: {detail}")
+            return True
+        if self._last_action == ("scan", "Legacy"):
+            self._log("Legacy repo credentials accepted. Retrying scan...")
+            self._start_scan("Legacy")
+        else:
+            self._log("Legacy repo credentials accepted. Retry the legacy operation.")
+        return True
+
+    def _looks_like_legacy_auth_error(self, message: str) -> bool:
+        lowered = message.lower()
+        patterns = (
+            "winerror 1326",
+            "user name or password is incorrect",
+            "logon failure",
+        )
+        return any(pattern in lowered for pattern in patterns)
+
+    def _extract_unc_path(self, message: str) -> str | None:
+        quoted = re.search(r"'(\\\\[^']+)'", message)
+        if quoted:
+            return quoted.group(1)
+        raw = re.search(r"(\\\\[^\\r\\n]+)", message)
+        if raw:
+            return raw.group(1)
+        return None
+
+    def _unc_share_root(self, path: str) -> str | None:
+        if not path.startswith("\\\\"):
+            return None
+        parts = PureWindowsPath(path).parts
+        if not parts:
+            return None
+        return parts[0].rstrip("\\")
+
+    def _connect_to_share(self, share: str, username: str, password: str) -> tuple[bool, str]:
+        if os.name != "nt":
+            return (False, "Network credentials can only be applied on Windows.")
+        cmd = ["net", "use", share, password, f"/user:{username}", "/persistent:no"]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if result.returncode == 0:
+            return (True, "Connected")
+        detail = (result.stderr or result.stdout or "Unknown error").strip()
+        return (False, detail)
 
     def _set_badge_cell(self, table: QTableWidget, row: int, column: int, text: str, palette: tuple[str, str, str]) -> None:
         label = QLabel(text)

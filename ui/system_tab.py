@@ -109,13 +109,17 @@ class SystemTab(QWidget):
         self._btn_apply.setEnabled(False)
         self._log("Applying system configuration values...")
         worker = ServiceWorker(self._run_apply)
-        worker.signals.finished.connect(lambda _: self._start_check())
+        worker.signals.finished.connect(self._handle_apply_finished)
         worker.signals.error.connect(self._handle_error)
         self._track_worker(worker)
         self._thread_pool.start(worker)
 
     def _run_apply(self) -> None:
         self._service.apply()
+
+    def _handle_apply_finished(self, _: object) -> None:
+        self._log("System configuration applied. Refreshing status...")
+        self._start_check()
 
     def _format_result_text(self, result: ConfigCheckResult) -> str:
         status_icon = "✓" if result.in_desired_state else "✗"

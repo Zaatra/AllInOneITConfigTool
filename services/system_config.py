@@ -191,14 +191,14 @@ class SystemConfigService:
             return ConfigCheckResult("Default User Profile", expected, str(exc), False)
 
     def _set_timezone(self) -> None:
-        self._runner.run(["tzutil", "/s", self._config.timezone])
+        self._run_and_check(["tzutil", "/s", self._config.timezone], "Set timezone")
 
     def _set_power_plan(self) -> None:
-        self._runner.run(["powercfg", "/setactive", self._config.power_plan.scheme])
+        self._run_and_check(["powercfg", "/setactive", self._config.power_plan.scheme], "Set power plan")
 
     def _set_locale(self) -> None:
         command = f"Set-WinSystemLocale -SystemLocale {shlex.quote(self._config.locale.system_locale)}"
-        self._runner.run(["powershell", "-NoProfile", "-Command", command])
+        self._run_and_check(["powershell", "-NoProfile", "-Command", command], "Set system locale")
 
     def _apply_user_profile_settings(self) -> None:
         self._registry.set_value(
@@ -236,6 +236,15 @@ class SystemConfigService:
         if completed.stderr and not completed.stdout:
             return completed.stderr.strip()
         return completed.stdout.strip()
+
+    def _run_and_check(self, command: Sequence[str], step: str) -> None:
+        completed = self._runner.run(command)
+        if completed.returncode == 0:
+            return
+        detail = (completed.stderr or completed.stdout or "").strip()
+        if detail:
+            raise RuntimeError(f"{step} failed: {detail}")
+        raise RuntimeError(f"{step} failed with exit code {completed.returncode}")
 
     def _with_default_user_hive(self, action: Callable[[str], T]) -> T:
         load = self._runner.run(["reg", "load", fr"HKU\{DEFAULT_USER_HIVE_KEY}", DEFAULT_USER_HIVE_PATH])
