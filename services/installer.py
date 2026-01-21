@@ -397,32 +397,82 @@ class ConfiguredUrlDownloader:
 class IVMSDownloader:
     """Scrapes Hikvision's site for the latest iVMS-4200 build."""
 
-    SOURCE_URL = "https://www.hikvision.com/us-en/support/download/software/"
+    SERIES_URL = "https://www.hikvision.com/en/support/download/software/ivms4200-series/"
+    FALLBACK_URL = "https://www.hikvision.com/us-en/support/download/software/"
     VERSION_PATTERNS = (
         re.compile(r"iVMS-4200V(\d+\.\d+\.\d+\.\d+)_E", re.IGNORECASE),
         re.compile(r"iVMS-4200\s+V(\d+\.\d+\.\d+\.\d+)", re.IGNORECASE),
     )
+    LINK_PATTERN = re.compile(
+        r"(https?://[^\s\"']+iVMS-4200[^\s\"']+?\.exe|/content/dam/[^\s\"']+iVMS-4200[^\s\"']+?\.exe)",
+        re.IGNORECASE,
+    )
 
     def fetch(self) -> DirectDownloadInfo:
+        html = ""
+        try:
+            html = self._fetch_html(self.SERIES_URL)
+        except Exception:
+            html = ""
+        links = self._extract_links(html)
+        if not links:
+            try:
+                html = self._fetch_html(self.FALLBACK_URL)
+                links = self._extract_links(html)
+            except Exception:
+                links = []
+        if links:
+            best_url, version = self._pick_latest_link(links)
+            if best_url and version:
+                return DirectDownloadInfo(version=version, url=best_url)
+        versions = self._extract_versions(html)
+        if not versions:
+            raise RuntimeError("Unable to determine latest iVMS-4200 version")
+        version = max(versions, key=_version_tuple)
+        url = self._build_url(version)
+        return DirectDownloadInfo(version=version, url=url)
+
+    def _fetch_html(self, url: str) -> str:
         request = urllib.request.Request(
-            self.SOURCE_URL,
+            url,
             headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120",
                 "Accept-Language": "en-US,en;q=0.9",
             },
         )
         with urllib.request.urlopen(request, timeout=20) as response:
-            html = response.read().decode("utf-8", errors="ignore")
-        versions = self._extract_versions(html)
-        if not versions:
-            raise RuntimeError("Unable to determine latest iVMS-4200 version")
-        version = max(versions, key=_version_tuple)
+            return response.read().decode("utf-8", errors="ignore")
+
+    def _build_url(self, version: str) -> str:
         dash = "v" + version.replace(".", "-")
-        url = (
+        return (
             "https://www.hikvision.com/content/dam/hikvision/en/support/download/vms/"
             "ivms4200-series/software-download/{dash}/iVMS-4200V{version}_E.exe".format(dash=dash, version=version)
         )
-        return DirectDownloadInfo(version=version, url=url)
+
+    def _extract_links(self, html: str) -> list[str]:
+        links = []
+        for match in self.LINK_PATTERN.finditer(html):
+            link = match.group(1)
+            if not link:
+                continue
+            if link.startswith("/"):
+                link = "https://www.hikvision.com" + link
+            links.append(link)
+        return list(dict.fromkeys(links))
+
+    def _pick_latest_link(self, links: list[str]) -> tuple[str | None, str | None]:
+        best_url = None
+        best_version = None
+        for link in links:
+            match = re.search(r"iVMS-4200V(\d+(?:\.\d+){1,3})_E\.exe", link, re.IGNORECASE)
+            if not match:
+                continue
+            version = match.group(1)
+            if not best_version or _version_tuple(version) > _version_tuple(best_version):
+                best_version = version
+                best_url = link
+        return best_url, best_version
 
     def _extract_versions(self, html: str) -> set[str]:
         found: set[str] = set()

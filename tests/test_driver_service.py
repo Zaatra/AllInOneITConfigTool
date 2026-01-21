@@ -28,8 +28,13 @@ class FakeHPIAClient:
         self.available = True
         self.scanned = False
         self.download_calls: list[list[str]] = []
+        self.ensure_calls = 0
 
     def is_available(self) -> bool:
+        return self.available
+
+    def ensure_available(self) -> bool:
+        self.ensure_calls += 1
         return self.available
 
     def scan(self) -> list[DriverRecord]:

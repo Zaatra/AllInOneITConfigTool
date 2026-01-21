@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Protocol, Sequence
@@ -308,12 +311,27 @@ def _resolve_legacy_repo_root(root: str | Path | None) -> Path:
     return Path(root)
 
 
+def _download_file(url: str, destination: Path) -> None:
+    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = destination.with_suffix(destination.suffix + ".download")
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response, temp_path.open("wb") as handle:
+            shutil.copyfileobj(response, handle)
+        temp_path.replace(destination)
+    except urllib.error.URLError as exc:
+        if temp_path.exists():
+            temp_path.unlink()
+        raise RuntimeError(f"Download failed for {url}: {exc}") from exc
+
+
 class HPIAClient:
     def __init__(
         self,
         working_dir: Path,
         *,
         executable: str | None = None,
+        download_url: str | None = None,
         command_runner: CommandRunner | None = None,
     ) -> None:
         self._working_dir = Path(working_dir)
@@ -321,9 +339,59 @@ class HPIAClient:
         self._executable = Path(executable) if executable else self._auto_detect()
         self._download_dir = self._working_dir / "hpia_softpaqs"
         self._report_dir = self._working_dir / "hpia_reports"
+        self._download_url = download_url or os.getenv(
+            "HPIA_DOWNLOAD_URL",
+            "https://hpia.hpcloud.hp.com/downloads/hpia/hp-hpia-5.2.1.exe",
+        )
 
     def is_available(self) -> bool:
         return self._executable is not None and self._executable.exists()
+
+    def ensure_available(self) -> bool:
+        if self.is_available():
+            return True
+        hpia_dir = self._working_dir / "HPIA"
+        hpia_dir.mkdir(parents=True, exist_ok=True)
+        existing = next(hpia_dir.rglob("HPImageAssistant.exe"), None)
+        if existing:
+            self._executable = existing
+            return True
+        installer = self._try_winget_download(hpia_dir)
+        if installer and installer.suffix.lower() != ".exe":
+            installer = None
+        if not installer:
+            installer = hpia_dir / "hp-hpia-setup.exe"
+            if not installer.exists():
+                try:
+                    _download_file(self._download_url, installer)
+                except Exception:
+                    if self._try_winget_install():
+                        refreshed = self._auto_detect()
+                        if refreshed and refreshed.exists():
+                            self._executable = refreshed
+                            return True
+                    raise
+        try:
+            result = self._runner.run([str(installer), "/s", "/e", "/f", str(hpia_dir)])
+            if result.returncode != 0:
+                raise RuntimeError(f"HPIA extract failed: {result.stderr}")
+        except Exception:
+            if self._try_winget_install():
+                refreshed = self._auto_detect()
+                if refreshed and refreshed.exists():
+                    self._executable = refreshed
+                    return True
+            raise
+        extracted = next(hpia_dir.rglob("HPImageAssistant.exe"), None)
+        if extracted:
+            self._executable = extracted
+            return True
+        if self._try_winget_install():
+            refreshed = self._auto_detect()
+            if refreshed and refreshed.exists():
+                self._executable = refreshed
+                return True
+        return False
 
     def scan(self) -> list[DriverRecord]:
         exe = self._require_executable()
@@ -415,6 +483,44 @@ class HPIAClient:
             if candidate.exists():
                 return candidate
         return None
+
+    def _try_winget_download(self, target_dir: Path) -> Path | None:
+        if shutil.which("winget") is None:
+            return None
+        args = [
+            "winget",
+            "download",
+            "--id",
+            "HP.ImageAssistant",
+            "--source",
+            "winget",
+            "--accept-source-agreements",
+            "--accept-package-agreements",
+            "--download-directory",
+            str(target_dir),
+        ]
+        result = self._runner.run(args)
+        if result.returncode != 0:
+            return None
+        candidates = sorted(target_dir.glob("*.exe"), key=lambda p: p.stat().st_mtime, reverse=True)
+        return candidates[0] if candidates else None
+
+    def _try_winget_install(self) -> bool:
+        if shutil.which("winget") is None:
+            return False
+        args = [
+            "winget",
+            "install",
+            "--id",
+            "HP.ImageAssistant",
+            "--source",
+            "winget",
+            "--silent",
+            "--accept-source-agreements",
+            "--accept-package-agreements",
+        ]
+        result = self._runner.run(args)
+        return result.returncode == 0
 
     def _require_executable(self) -> Path:
         if not self.is_available():
@@ -564,15 +670,27 @@ class DriverService:
         info = self._system_info_provider()
         self.last_scan_warnings = []
         records: list[DriverRecord] = []
-        if self._hpia.is_available():
+        hpia_ready = self._hpia.is_available()
+        attempted_hpia = False
+        auto_download_failed = False
+        if not hpia_ready and (info.supports_hpia or info.manufacturer or info.model or info.platform_id):
+            attempted_hpia = True
+            try:
+                hpia_ready = self._hpia.ensure_available()
+            except Exception as exc:
+                auto_download_failed = True
+                self.last_scan_warnings.append(f"HPIA auto-download failed: {exc}")
+        if hpia_ready:
             try:
                 records.extend(self._hpia.scan())
             except Exception as exc:
                 self.last_scan_warnings.append(f"HPIA scan failed: {exc}")
         elif info.supports_hpia or info.manufacturer or info.model or info.platform_id:
-            self.last_scan_warnings.append(
-                "HPIA not found. Install HP Image Assistant or place HPImageAssistant.exe in the working directory."
-            )
+            if not auto_download_failed:
+                message = "HPIA not found after auto-download attempt."
+                if not attempted_hpia:
+                    message = "HPIA not found. Install HP Image Assistant or place HPImageAssistant.exe in the working directory."
+                self.last_scan_warnings.append(message)
         if info.supports_cmsl:
             if self._cmsl.is_available():
                 try:
