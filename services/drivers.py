@@ -90,11 +90,47 @@ def _compare_versions(installed: str | None, available: str | None) -> int | Non
         return None
 
 
+def _compare_version_strings(left: str | None, right: str | None) -> int | None:
+    if not left or not right:
+        return None
+    norm_left = _normalize_version(left)
+    norm_right = _normalize_version(right)
+    try:
+        left_parts = [int(p) for p in norm_left.split(".")]
+        right_parts = [int(p) for p in norm_right.split(".")]
+        if left_parts < right_parts:
+            return -1
+        if left_parts > right_parts:
+            return 1
+        return 0
+    except (ValueError, AttributeError):
+        return None
+
+
 def _normalize_name(value: str) -> str:
     text = value.lower()
     text = text.replace("wi-fi", "wifi").replace("wi fi", "wifi")
     text = re.sub(r"[^a-z0-9]+", " ", text)
     return text.strip()
+
+
+def _dedupe_latest_records(records: list[DriverRecord]) -> list[DriverRecord]:
+    best: dict[str, DriverRecord] = {}
+    for record in records:
+        key = _normalize_name(record.name)
+        current = best.get(key)
+        if not current:
+            best[key] = record
+            continue
+        if current.latest_version is None and record.latest_version:
+            best[key] = record
+            continue
+        cmp_result = _compare_version_strings(current.latest_version, record.latest_version)
+        if cmp_result is None:
+            continue
+        if cmp_result < 0:
+            best[key] = record
+    return list(best.values())
 
 
 def get_hp_system_info(*, powershell: str = "powershell") -> HPSystemInfo:
@@ -597,6 +633,44 @@ class CMSLClient:
             )
         return records
 
+    def scan_catalog(self, platform_id: str | None) -> list[DriverRecord]:
+        if not platform_id:
+            return []
+        script = (
+            "Import-Module HPCMSL -ErrorAction Stop; "
+            f"$sp = Get-SoftpaqList -Platform '{platform_id}' -Os Win11 -OsVer 24H2 -ErrorAction Stop; "
+            "$sp | ConvertTo-Json -Depth 4"
+        )
+        result = self._runner.run([self._powershell, "-NoProfile", "-Command", script])
+        if result.returncode != 0 or not result.stdout:
+            return []
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return []
+        if isinstance(data, dict):
+            data = [data]
+        records: list[DriverRecord] = []
+        for item in data or []:
+            if not isinstance(item, dict):
+                continue
+            category = item.get("Category", "")
+            if "driver" not in category.lower() and "bios" not in category.lower() and "firmware" not in category.lower():
+                continue
+            records.append(
+                DriverRecord(
+                    name=item.get("Name", "Unknown"),
+                    status="Catalog",
+                    source="CMSL",
+                    installed_version=None,
+                    latest_version=item.get("Version"),
+                    category=category,
+                    softpaq_id=item.get("Id") or item.get("SoftPaqId"),
+                    download_url=item.get("Url"),
+                )
+            )
+        return records
+
     def download(self, softpaq_id: str, destination: Path) -> Path:
         destination.parent.mkdir(parents=True, exist_ok=True)
         script = (
@@ -715,6 +789,61 @@ class DriverService:
                 self.last_scan_warnings.append("CMSL not available. Install the HPCMSL PowerShell module.")
         if not records and info.supports_legacy_repo:
             records.extend(self._legacy.list_packages(info.platform_id, info.model))
+        return records
+
+    def scan_hpia(self) -> list[DriverRecord]:
+        info = self._system_info_provider()
+        self.last_scan_warnings = []
+        records: list[DriverRecord] = []
+        hpia_ready = self._hpia.is_available()
+        attempted_hpia = False
+        auto_download_failed = False
+        if not hpia_ready and (info.supports_hpia or info.manufacturer or info.model or info.platform_id):
+            attempted_hpia = True
+            try:
+                hpia_ready = self._hpia.ensure_available()
+            except Exception as exc:
+                auto_download_failed = True
+                self.last_scan_warnings.append(f"HPIA auto-download failed: {exc}")
+        if hpia_ready:
+            try:
+                records = self._hpia.scan()
+            except Exception as exc:
+                self.last_scan_warnings.append(f"HPIA scan failed: {exc}")
+        else:
+            if not auto_download_failed:
+                message = "HPIA not found after auto-download attempt."
+                if not attempted_hpia:
+                    message = "HPIA not found. Install HP Image Assistant or place HPImageAssistant.exe in the working directory."
+                self.last_scan_warnings.append(message)
+        return records
+
+    def scan_cmsl_catalog(self) -> list[DriverRecord]:
+        info = self._system_info_provider()
+        self.last_scan_warnings = []
+        if not info.supports_cmsl:
+            self.last_scan_warnings.append("CMSL not supported on this system/OS.")
+            return []
+        if not self._cmsl.is_available():
+            self.last_scan_warnings.append("CMSL not available. Install the HPCMSL PowerShell module.")
+            return []
+        try:
+            records = self._cmsl.scan_catalog(info.platform_id)
+        except Exception as exc:
+            self.last_scan_warnings.append(f"CMSL scan failed: {exc}")
+            return []
+        deduped = _dedupe_latest_records(records)
+        return sorted(deduped, key=lambda r: (r.category or "", r.name))
+
+    def scan_legacy(self) -> list[DriverRecord]:
+        info = self._system_info_provider()
+        self.last_scan_warnings = []
+        if not info.supports_legacy_repo:
+            self.last_scan_warnings.append("Legacy repository not supported on this system.")
+            return []
+        records = self._legacy.list_packages(info.platform_id, info.model)
+        if not records:
+            self.last_scan_warnings.append("No legacy repository manifest found for this device.")
         return records
 
     def download(self, records: Iterable[DriverRecord]) -> list[DriverOperationResult]:

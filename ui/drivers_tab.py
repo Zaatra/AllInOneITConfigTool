@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -20,8 +21,9 @@ from PySide6.QtWidgets import (
 )
 
 from allinone_it_config.paths import get_application_directory
-from allinone_it_config.user_settings import UserSettings
+from allinone_it_config.user_settings import SettingsStore, UserSettings
 from services.drivers import DriverOperationResult, DriverRecord, DriverService
+from ui.driver_settings_dialog import DriverSettingsDialog
 from ui.workers import ServiceWorker
 
 LogCallback = Callable[[str], None]
@@ -35,14 +37,16 @@ class DriversTab(QWidget):
         *,
         working_dir: Path | None = None,
         settings: UserSettings | None = None,
+        settings_store: SettingsStore | None = None,
     ) -> None:
         super().__init__()
         self._log = log_callback
         self._thread_pool = thread_pool
         self._working_dir = working_dir or get_application_directory()
-        self._settings = settings or UserSettings()
+        self._settings_store = settings_store or SettingsStore()
+        self._settings = settings or self._settings_store.load()
         self._refresh_service()
-        self._records: list[DriverRecord] = []
+        self._records_by_source: dict[str, list[DriverRecord]] = {"HPIA": [], "CMSL": [], "LEGACY": []}
         self._workers: set[ServiceWorker] = set()
         self._busy = False
         self._build_ui()
@@ -61,29 +65,48 @@ class DriversTab(QWidget):
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
+        self._tabs = QTabWidget(self)
+        self._panels: dict[str, dict[str, QWidget]] = {}
+        self._panels["HPIA"] = self._create_panel("HPIA")
+        self._panels["CMSL"] = self._create_panel("CMSL")
+        self._panels["LEGACY"] = self._create_panel("Legacy", show_settings=True)
+        self._tabs.addTab(self._panels["HPIA"]["widget"], "HPIA")
+        self._tabs.addTab(self._panels["CMSL"]["widget"], "CMSL")
+        self._tabs.addTab(self._panels["LEGACY"]["widget"], "Legacy")
+        layout.addWidget(self._tabs)
+
+    def _create_panel(self, source: str, *, show_settings: bool = False) -> dict[str, QWidget]:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
 
         button_row = QHBoxLayout()
-        self._btn_scan = QPushButton("Scan Drivers")
-        self._btn_download = QPushButton("Download Selected")
-        self._btn_install = QPushButton("Install Selected")
-        self._btn_select_all = QPushButton("Select All")
-        self._btn_select_none = QPushButton("Select None")
-        for btn in (self._btn_scan, self._btn_download, self._btn_install):
+        btn_scan = QPushButton(f"Scan {source}")
+        btn_download = QPushButton("Download Selected")
+        btn_install = QPushButton("Install Selected")
+        btn_select_all = QPushButton("Select All")
+        btn_select_none = QPushButton("Select None")
+        for btn in (btn_scan, btn_download, btn_install):
             btn.setMinimumWidth(150)
-        button_row.addWidget(self._btn_scan)
-        button_row.addWidget(self._btn_download)
-        button_row.addWidget(self._btn_install)
+        button_row.addWidget(btn_scan)
+        button_row.addWidget(btn_download)
+        button_row.addWidget(btn_install)
+        if show_settings:
+            btn_settings = QPushButton("Settings")
+            button_row.addWidget(btn_settings)
+            btn_settings.clicked.connect(self._open_driver_settings)
+        else:
+            btn_settings = None
         button_row.addStretch()
-        button_row.addWidget(self._btn_select_all)
-        button_row.addWidget(self._btn_select_none)
+        button_row.addWidget(btn_select_all)
+        button_row.addWidget(btn_select_none)
         layout.addLayout(button_row)
 
-        self._table = QTableWidget(0, 6, self)
-        self._table.setHorizontalHeaderLabels(["Select", "Source", "Name", "Installed", "Latest", "Status"])
-        self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self._table.setAlternatingRowColors(True)
-        self._table.verticalHeader().setVisible(False)
-        header = self._table.horizontalHeader()
+        table = QTableWidget(0, 6, panel)
+        table.setHorizontalHeaderLabels(["Select", "Source", "Name", "Installed", "Latest", "Status"])
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        table.setAlternatingRowColors(True)
+        table.verticalHeader().setVisible(False)
+        header = table.horizontalHeader()
         header.setStretchLastSection(True)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
@@ -91,115 +114,141 @@ class DriversTab(QWidget):
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
-        layout.addWidget(self._table)
+        layout.addWidget(table)
 
-        self._btn_scan.clicked.connect(self._start_scan)
-        self._btn_select_all.clicked.connect(lambda: self._set_all(Qt.Checked))
-        self._btn_select_none.clicked.connect(lambda: self._set_all(Qt.Unchecked))
-        self._btn_download.clicked.connect(lambda: self._start_operation("download"))
-        self._btn_install.clicked.connect(lambda: self._start_operation("install"))
+        btn_scan.clicked.connect(lambda: self._start_scan(source))
+        btn_select_all.clicked.connect(lambda: self._set_all(table, Qt.Checked))
+        btn_select_none.clicked.connect(lambda: self._set_all(table, Qt.Unchecked))
+        btn_download.clicked.connect(lambda: self._start_operation(source, "download"))
+        btn_install.clicked.connect(lambda: self._start_operation(source, "install"))
 
-    def _start_scan(self) -> None:
+        return {
+            "widget": panel,
+            "table": table,
+            "btn_scan": btn_scan,
+            "btn_download": btn_download,
+            "btn_install": btn_install,
+            "btn_select_all": btn_select_all,
+            "btn_select_none": btn_select_none,
+            "btn_settings": btn_settings,
+        }
+
+    def _start_scan(self, source: str) -> None:
         if self._busy:
             return
         self._refresh_service()
         self._busy = True
         self._set_buttons_enabled(False)
-        self._log("Scanning for HP driver updates...")
-        worker = ServiceWorker(self._service.scan)
-        worker.signals.finished.connect(self._handle_scan_results)
+        self._log(f"Scanning {source} drivers...")
+        if source == "HPIA":
+            action = self._service.scan_hpia
+        elif source == "CMSL":
+            action = self._service.scan_cmsl_catalog
+        else:
+            action = self._service.scan_legacy
+        worker = ServiceWorker(action)
+        worker.signals.finished.connect(lambda records, src=source: self._handle_scan_results(src, records))
         worker.signals.error.connect(self._handle_error)
         self._track_worker(worker)
         self._thread_pool.start(worker)
 
-    def _handle_scan_results(self, records: Iterable[DriverRecord]) -> None:
-        self._records = list(records)
-        self._populate_table()
-        self._log(f"Driver scan complete. Found {len(self._records)} entries.")
+    def _handle_scan_results(self, source: str, records: Iterable[DriverRecord]) -> None:
+        self._records_by_source[source.upper()] = list(records)
+        self._populate_table(source)
+        self._log(f"{source} scan complete. Found {len(self._records_by_source[source.upper()])} entries.")
         for warning in self._service.last_scan_warnings:
             self._log(f"[WARN] {warning}")
         self._busy = False
         self._set_buttons_enabled(True)
 
-    def _start_operation(self, op: str) -> None:
+    def _start_operation(self, source: str, op: str) -> None:
         if self._busy:
             QMessageBox.information(self, "In Progress", "Wait for the current operation to finish.")
             return
-        selected = self._selected_records()
+        selected = self._selected_records(source)
         if not selected:
             QMessageBox.information(self, "No Selection", "Select at least one driver entry.")
             return
         self._busy = True
         self._set_buttons_enabled(False)
         action = self._service.download if op == "download" else self._service.install
-        self._log(f"Running {op} for {len(selected)} driver(s)...")
+        self._log(f"Running {op} for {len(selected)} driver(s) from {source}...")
         worker = ServiceWorker(action, selected)
-        worker.signals.finished.connect(lambda result, op=op: self._handle_driver_results(op, result))
+        worker.signals.finished.connect(lambda result, op=op, src=source: self._handle_driver_results(src, op, result))
         worker.signals.error.connect(self._handle_error)
         self._track_worker(worker)
         self._thread_pool.start(worker)
 
-    def _handle_driver_results(self, op: str, results: Iterable[DriverOperationResult]) -> None:
+    def _handle_driver_results(self, source: str, op: str, results: Iterable[DriverOperationResult]) -> None:
         for result in results:
             status = "OK" if result.success else "FAIL"
             self._log(f"[{status}] {op} :: {result.driver.name} -> {result.message}")
         if op == "download":
-            self._populate_table()
+            self._populate_table(source)
         self._busy = False
         self._set_buttons_enabled(True)
 
-    def _populate_table(self) -> None:
-        self._table.setRowCount(len(self._records))
-        for row, record in enumerate(self._records):
-            self._table.setRowHeight(row, 28)
+    def _populate_table(self, source: str) -> None:
+        key = source.upper()
+        table = self._panel_table(key)
+        records = self._records_by_source.get(key, [])
+        table.setRowCount(len(records))
+        for row, record in enumerate(records):
+            table.setRowHeight(row, 28)
             checkbox = QTableWidgetItem()
             checkbox.setFlags(Qt.ItemIsSelectable | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
             checkbox.setCheckState(Qt.Unchecked)
             checkbox.setData(Qt.UserRole, row)
-            self._table.setItem(row, 0, checkbox)
+            table.setItem(row, 0, checkbox)
 
-            self._set_badge_cell(row, 1, record.source, self._source_badge_style(record.source))
-            self._table.setItem(row, 2, QTableWidgetItem(record.name))
-            installed = record.installed_version or "Unknown"
+            self._set_badge_cell(table, row, 1, record.source, self._source_badge_style(record.source))
+            table.setItem(row, 2, QTableWidgetItem(record.name))
+            installed = record.installed_version or ("N/A" if record.status.lower() == "catalog" else "Unknown")
             latest = record.latest_version or "Unknown"
             installed_item = QTableWidgetItem(installed)
             installed_item.setTextAlignment(Qt.AlignCenter)
-            self._table.setItem(row, 3, installed_item)
+            table.setItem(row, 3, installed_item)
             latest_item = QTableWidgetItem(latest)
             latest_item.setTextAlignment(Qt.AlignCenter)
-            self._table.setItem(row, 4, latest_item)
+            table.setItem(row, 4, latest_item)
             status_text = record.status
             if record.output_path:
                 status_text += " (cached)"
-            self._set_badge_cell(row, 5, status_text, self._status_badge_style(record.status))
-            self._apply_version_colors(row, record.status)
+            self._set_badge_cell(table, row, 5, status_text, self._status_badge_style(record.status))
+            self._apply_version_colors(table, row, record.status)
 
-    def _selected_records(self) -> List[DriverRecord]:
+    def _selected_records(self, source: str) -> List[DriverRecord]:
+        key = source.upper()
+        table = self._panel_table(key)
+        records = self._records_by_source.get(key, [])
         selections: list[DriverRecord] = []
-        for row in range(self._table.rowCount()):
-            item = self._table.item(row, 0)
+        for row in range(table.rowCount()):
+            item = table.item(row, 0)
             if item and item.checkState() == Qt.Checked:
                 idx = item.data(Qt.UserRole)
-                if isinstance(idx, int) and 0 <= idx < len(self._records):
-                    selections.append(self._records[idx])
+                if isinstance(idx, int) and 0 <= idx < len(records):
+                    selections.append(records[idx])
         return selections
 
-    def _set_all(self, state: Qt.CheckState) -> None:
-        for row in range(self._table.rowCount()):
-            item = self._table.item(row, 0)
+    def _set_all(self, table: QTableWidget, state: Qt.CheckState) -> None:
+        for row in range(table.rowCount()):
+            item = table.item(row, 0)
             if item:
                 item.setCheckState(state)
 
     def _set_buttons_enabled(self, enabled: bool) -> None:
-        for button in (self._btn_scan, self._btn_download, self._btn_install, self._btn_select_all, self._btn_select_none):
-            button.setEnabled(enabled)
+        for panel in self._panels.values():
+            for key in ("btn_scan", "btn_download", "btn_install", "btn_select_all", "btn_select_none", "btn_settings"):
+                button = panel.get(key)
+                if isinstance(button, QPushButton):
+                    button.setEnabled(enabled)
 
     def _handle_error(self, message: str) -> None:
         self._log(f"[ERROR] {message}")
         self._busy = False
         self._set_buttons_enabled(True)
 
-    def _set_badge_cell(self, row: int, column: int, text: str, palette: tuple[str, str, str]) -> None:
+    def _set_badge_cell(self, table: QTableWidget, row: int, column: int, text: str, palette: tuple[str, str, str]) -> None:
         label = QLabel(text)
         label.setAlignment(Qt.AlignCenter)
         label.setStyleSheet(
@@ -212,7 +261,7 @@ class DriversTab(QWidget):
             "font-weight: 600;"
             "}"
         )
-        self._table.setCellWidget(row, column, label)
+        table.setCellWidget(row, column, label)
 
     def _source_badge_style(self, source: str) -> tuple[str, str, str]:
         palette = {
@@ -232,13 +281,14 @@ class DriversTab(QWidget):
             "installed": ("#dcfce7", "#14532d", "#22c55e"),
             "not installed": ("#e5e7eb", "#4b5563", "#9ca3af"),
             "legacy": ("#e5e7eb", "#374151", "#9ca3af"),
+            "catalog": ("#e0f2fe", "#075985", "#38bdf8"),
             "unknown": ("#e5e7eb", "#4b5563", "#9ca3af"),
         }
         return palette.get(status.lower(), ("#e5e7eb", "#4b5563", "#9ca3af"))
 
-    def _apply_version_colors(self, row: int, status: str) -> None:
-        installed_item = self._table.item(row, 3)
-        latest_item = self._table.item(row, 4)
+    def _apply_version_colors(self, table: QTableWidget, row: int, status: str) -> None:
+        installed_item = table.item(row, 3)
+        latest_item = table.item(row, 4)
         if not installed_item or not latest_item:
             return
         status_key = status.lower()
@@ -252,3 +302,14 @@ class DriversTab(QWidget):
             latest_item.setForeground(QColor("#38bdf8"))
         elif status_key in {"not installed", "unknown"}:
             installed_item.setForeground(QColor("#9ca3af"))
+
+    def _panel_table(self, source: str) -> QTableWidget:
+        key = source.upper()
+        table = self._panels[key]["table"]
+        return table  # type: ignore[return-value]
+
+    def _open_driver_settings(self) -> None:
+        dialog = DriverSettingsDialog(self._settings, self._settings_store, self)
+        if dialog.exec():
+            self._refresh_service()
+            self._log("Driver settings saved.")

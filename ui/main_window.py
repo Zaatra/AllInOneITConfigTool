@@ -70,6 +70,7 @@ class MainWindow(QMainWindow):
             thread_pool=self._thread_pool,
             working_dir=get_application_directory(),
             settings=self._settings,
+            settings_store=self._settings_store,
         )
 
     def _create_system_tab(self) -> QWidget:

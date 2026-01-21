@@ -1,11 +1,10 @@
 """System configuration logic (timezone, locale, power, icons)."""
 from __future__ import annotations
 
-import platform
 import shlex
 import subprocess
 from dataclasses import dataclass
-from typing import Iterable, Protocol, Sequence
+from typing import Callable, Iterable, Protocol, Sequence, TypeVar
 
 from allinone_it_config.constants import FixedSystemConfig
 
@@ -13,6 +12,12 @@ try:  # Windows-only dependency, optional for test doubles
     import winreg  # type: ignore
 except ImportError:  # pragma: no cover - not available on Linux runners
     winreg = None  # type: ignore
+
+DEFAULT_USER_HIVE_KEY = "AIO_DefaultUser"
+DEFAULT_USER_HIVE_PATH = r"C:\Users\Default\NTUSER.DAT"
+HKCU_PREFIX = "HKCU:\\"
+
+T = TypeVar("T")
 
 
 @dataclass
@@ -103,6 +108,7 @@ class SystemConfigService:
             self._check_fast_boot(),
             self._check_desktop_icons(),
             self._check_locale(),
+            self._check_default_user_profile(),
         ]
         return results
 
@@ -114,17 +120,8 @@ class SystemConfigService:
             self._config.fast_boot.value_name,
             int(self._config.fast_boot.desired_value),
         )
-        self._registry.set_value(
-            self._config.desktop_icons.path,
-            self._config.desktop_icons.value_name,
-            int(self._config.desktop_icons.desired_value),
-        )
         self._set_locale()
-        self._registry.set_value(
-            r"HKCU:\Control Panel\International",
-            "sShortDate",
-            self._config.locale.short_date_format,
-        )
+        self._apply_user_profile_settings()
 
     def _check_timezone(self) -> ConfigCheckResult:
         expected = self._config.timezone
@@ -172,6 +169,27 @@ class SystemConfigService:
             actual = f"{actual} / {date_val}"
         return ConfigCheckResult("Locale", f"{expected} / {self._config.locale.short_date_format}", actual, ok)
 
+    def _check_default_user_profile(self) -> ConfigCheckResult:
+        expected_hide = int(self._config.desktop_icons.desired_value)
+        expected_date = self._config.locale.short_date_format
+        expected = f"HideIcons={expected_hide}, sShortDate={expected_date}"
+
+        def check(root: str) -> ConfigCheckResult:
+            hide_path = self._map_user_path(self._config.desktop_icons.path, root)
+            date_path = self._map_user_path(r"HKCU:\Control Panel\International", root)
+            hide_val = self._registry.get_value(hide_path, self._config.desktop_icons.value_name)
+            date_val = self._registry.get_value(date_path, "sShortDate")
+            hide_str = "Not Set" if hide_val is None else str(hide_val)
+            date_str = "Not Set" if date_val is None else str(date_val)
+            actual = f"HideIcons={hide_str}, sShortDate={date_str}"
+            ok = hide_val == expected_hide and str(date_val).lower() == expected_date.lower()
+            return ConfigCheckResult("Default User Profile", expected, actual, ok)
+
+        try:
+            return self._with_default_user_hive(check)
+        except RuntimeError as exc:
+            return ConfigCheckResult("Default User Profile", expected, str(exc), False)
+
     def _set_timezone(self) -> None:
         self._runner.run(["tzutil", "/s", self._config.timezone])
 
@@ -181,6 +199,32 @@ class SystemConfigService:
     def _set_locale(self) -> None:
         command = f"Set-WinSystemLocale -SystemLocale {shlex.quote(self._config.locale.system_locale)}"
         self._runner.run(["powershell", "-NoProfile", "-Command", command])
+
+    def _apply_user_profile_settings(self) -> None:
+        self._registry.set_value(
+            self._config.desktop_icons.path,
+            self._config.desktop_icons.value_name,
+            int(self._config.desktop_icons.desired_value),
+        )
+        self._registry.set_value(
+            r"HKCU:\Control Panel\International",
+            "sShortDate",
+            self._config.locale.short_date_format,
+        )
+
+        def apply_to_default(root: str) -> None:
+            self._registry.set_value(
+                self._map_user_path(self._config.desktop_icons.path, root),
+                self._config.desktop_icons.value_name,
+                int(self._config.desktop_icons.desired_value),
+            )
+            self._registry.set_value(
+                self._map_user_path(r"HKCU:\Control Panel\International", root),
+                "sShortDate",
+                self._config.locale.short_date_format,
+            )
+
+        self._with_default_user_hive(apply_to_default)
 
     def _extract_power_scheme_name(self, output: str) -> str:
         if "(" in output and ")" in output:
@@ -192,3 +236,19 @@ class SystemConfigService:
         if completed.stderr and not completed.stdout:
             return completed.stderr.strip()
         return completed.stdout.strip()
+
+    def _with_default_user_hive(self, action: Callable[[str], T]) -> T:
+        load = self._runner.run(["reg", "load", fr"HKU\{DEFAULT_USER_HIVE_KEY}", DEFAULT_USER_HIVE_PATH])
+        if load.returncode != 0:
+            detail = (load.stderr or load.stdout or "").strip() or "Unknown error"
+            raise RuntimeError(f"Default user profile load failed: {detail}")
+        try:
+            return action(fr"HKU:\{DEFAULT_USER_HIVE_KEY}")
+        finally:
+            self._runner.run(["reg", "unload", fr"HKU\{DEFAULT_USER_HIVE_KEY}"])
+
+    def _map_user_path(self, path: str, root: str) -> str:
+        if not path.upper().startswith(HKCU_PREFIX):
+            raise ValueError(f"Expected HKCU path, got: {path}")
+        suffix = path[len(HKCU_PREFIX) :]
+        return f"{root}\\{suffix}"
