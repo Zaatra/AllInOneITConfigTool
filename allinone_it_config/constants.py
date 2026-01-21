@@ -72,7 +72,7 @@ FIXED_SYSTEM_CONFIG = FixedSystemConfig(
 )
 
 GLOBAL_IDS = GlobalIds(
-    hp_legacy_repo_root=r"\\192.168.168.6\Admin Tools\Drivers-Repo",
+    hp_legacy_repo_root="",
 )
 
 IMMUTABLE_CONFIG = ImmutableConfig(

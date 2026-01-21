@@ -24,7 +24,7 @@ def test_crowdstrike_args_empty_by_default() -> None:
 
 
 def test_hp_legacy_repo_path() -> None:
-    assert IMMUTABLE_CONFIG.ids.hp_legacy_repo_root == r"\\192.168.168.6\Admin Tools\Drivers-Repo"
+    assert IMMUTABLE_CONFIG.ids.hp_legacy_repo_root == ""
 
 
 def test_winget_ids_preserved() -> None:

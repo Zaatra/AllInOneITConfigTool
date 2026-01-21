@@ -8,6 +8,7 @@ from PySide6.QtCore import Qt, QThreadPool
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
     QHeaderView,
     QHBoxLayout,
     QLabel,
@@ -47,6 +48,7 @@ class DriversTab(QWidget):
         self._settings = settings or self._settings_store.load()
         self._refresh_service()
         self._records_by_source: dict[str, list[DriverRecord]] = {"HPIA": [], "CMSL": [], "LEGACY": []}
+        self._view_by_source: dict[str, list[DriverRecord]] = {"HPIA": [], "CMSL": [], "LEGACY": []}
         self._workers: set[ServiceWorker] = set()
         self._busy = False
         self._build_ui()
@@ -68,14 +70,20 @@ class DriversTab(QWidget):
         self._tabs = QTabWidget(self)
         self._panels: dict[str, dict[str, QWidget]] = {}
         self._panels["HPIA"] = self._create_panel("HPIA")
-        self._panels["CMSL"] = self._create_panel("CMSL")
+        self._panels["CMSL"] = self._create_panel("CMSL", show_filter=True)
         self._panels["LEGACY"] = self._create_panel("Legacy", show_settings=True)
         self._tabs.addTab(self._panels["HPIA"]["widget"], "HPIA")
         self._tabs.addTab(self._panels["CMSL"]["widget"], "CMSL")
         self._tabs.addTab(self._panels["LEGACY"]["widget"], "Legacy")
         layout.addWidget(self._tabs)
 
-    def _create_panel(self, source: str, *, show_settings: bool = False) -> dict[str, QWidget]:
+    def _create_panel(
+        self,
+        source: str,
+        *,
+        show_settings: bool = False,
+        show_filter: bool = False,
+    ) -> dict[str, QWidget]:
         panel = QWidget()
         layout = QVBoxLayout(panel)
 
@@ -96,13 +104,22 @@ class DriversTab(QWidget):
             btn_settings.clicked.connect(self._open_driver_settings)
         else:
             btn_settings = None
+        if show_filter:
+            filter_label = QLabel("Category")
+            filter_combo = QComboBox()
+            filter_combo.addItem("All")
+            button_row.addWidget(filter_label)
+            button_row.addWidget(filter_combo)
+            filter_combo.currentTextChanged.connect(lambda _: self._populate_table(source))
+        else:
+            filter_combo = None
         button_row.addStretch()
         button_row.addWidget(btn_select_all)
         button_row.addWidget(btn_select_none)
         layout.addLayout(button_row)
 
-        table = QTableWidget(0, 6, panel)
-        table.setHorizontalHeaderLabels(["Select", "Source", "Name", "Installed", "Latest", "Status"])
+        table = QTableWidget(0, 7, panel)
+        table.setHorizontalHeaderLabels(["Select", "Source", "Name", "Category", "Installed", "Latest", "Status"])
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         table.setAlternatingRowColors(True)
         table.verticalHeader().setVisible(False)
@@ -114,6 +131,7 @@ class DriversTab(QWidget):
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
         layout.addWidget(table)
 
         btn_scan.clicked.connect(lambda: self._start_scan(source))
@@ -131,6 +149,7 @@ class DriversTab(QWidget):
             "btn_select_all": btn_select_all,
             "btn_select_none": btn_select_none,
             "btn_settings": btn_settings,
+            "category_filter": filter_combo,
         }
 
     def _start_scan(self, source: str) -> None:
@@ -154,6 +173,8 @@ class DriversTab(QWidget):
 
     def _handle_scan_results(self, source: str, records: Iterable[DriverRecord]) -> None:
         self._records_by_source[source.upper()] = list(records)
+        if source.upper() == "CMSL":
+            self._update_category_filter(source, self._records_by_source[source.upper()])
         self._populate_table(source)
         self._log(f"{source} scan complete. Found {len(self._records_by_source[source.upper()])} entries.")
         for warning in self._service.last_scan_warnings:
@@ -191,7 +212,8 @@ class DriversTab(QWidget):
     def _populate_table(self, source: str) -> None:
         key = source.upper()
         table = self._panel_table(key)
-        records = self._records_by_source.get(key, [])
+        records = self._filtered_records(source)
+        self._view_by_source[key] = records
         table.setRowCount(len(records))
         for row, record in enumerate(records):
             table.setRowHeight(row, 28)
@@ -203,24 +225,26 @@ class DriversTab(QWidget):
 
             self._set_badge_cell(table, row, 1, record.source, self._source_badge_style(record.source))
             table.setItem(row, 2, QTableWidgetItem(record.name))
+            category = record.category or "Other"
+            table.setItem(row, 3, QTableWidgetItem(category))
             installed = record.installed_version or ("N/A" if record.status.lower() == "catalog" else "Unknown")
             latest = record.latest_version or "Unknown"
             installed_item = QTableWidgetItem(installed)
             installed_item.setTextAlignment(Qt.AlignCenter)
-            table.setItem(row, 3, installed_item)
+            table.setItem(row, 4, installed_item)
             latest_item = QTableWidgetItem(latest)
             latest_item.setTextAlignment(Qt.AlignCenter)
-            table.setItem(row, 4, latest_item)
+            table.setItem(row, 5, latest_item)
             status_text = record.status
             if record.output_path:
                 status_text += " (cached)"
-            self._set_badge_cell(table, row, 5, status_text, self._status_badge_style(record.status))
+            self._set_badge_cell(table, row, 6, status_text, self._status_badge_style(record.status))
             self._apply_version_colors(table, row, record.status)
 
     def _selected_records(self, source: str) -> List[DriverRecord]:
         key = source.upper()
         table = self._panel_table(key)
-        records = self._records_by_source.get(key, [])
+        records = self._view_by_source.get(key, [])
         selections: list[DriverRecord] = []
         for row in range(table.rowCount()):
             item = table.item(row, 0)
@@ -287,8 +311,8 @@ class DriversTab(QWidget):
         return palette.get(status.lower(), ("#e5e7eb", "#4b5563", "#9ca3af"))
 
     def _apply_version_colors(self, table: QTableWidget, row: int, status: str) -> None:
-        installed_item = table.item(row, 3)
-        latest_item = table.item(row, 4)
+        installed_item = table.item(row, 4)
+        latest_item = table.item(row, 5)
         if not installed_item or not latest_item:
             return
         status_key = status.lower()
@@ -302,6 +326,39 @@ class DriversTab(QWidget):
             latest_item.setForeground(QColor("#38bdf8"))
         elif status_key in {"not installed", "unknown"}:
             installed_item.setForeground(QColor("#9ca3af"))
+
+    def _filtered_records(self, source: str) -> list[DriverRecord]:
+        key = source.upper()
+        records = list(self._records_by_source.get(key, []))
+        if key != "CMSL":
+            return records
+        panel = self._panels.get(key, {})
+        combo = panel.get("category_filter")
+        if not isinstance(combo, QComboBox):
+            return records
+        selection = combo.currentText().strip()
+        if not selection or selection == "All":
+            return records
+        return [record for record in records if (record.category or "Other") == selection]
+
+    def _update_category_filter(self, source: str, records: list[DriverRecord]) -> None:
+        key = source.upper()
+        panel = self._panels.get(key, {})
+        combo = panel.get("category_filter")
+        if not isinstance(combo, QComboBox):
+            return
+        categories = sorted({(record.category or "Other") for record in records})
+        current = combo.currentText()
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("All")
+        for category in categories:
+            combo.addItem(category)
+        combo.blockSignals(False)
+        if current in categories:
+            combo.setCurrentText(current)
+        else:
+            combo.setCurrentIndex(0)
 
     def _panel_table(self, source: str) -> QTableWidget:
         key = source.upper()

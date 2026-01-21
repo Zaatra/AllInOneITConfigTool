@@ -114,6 +114,31 @@ def _normalize_name(value: str) -> str:
     return text.strip()
 
 
+def _categorize_cmsl(category: str | None, name: str | None) -> str:
+    raw = f"{category or ''} {name or ''}".lower()
+    if "bios" in raw or "firmware" in raw or "uefi" in raw:
+        return "BIOS/Firmware"
+    if "audio" in raw or "sound" in raw:
+        return "Audio"
+    if "video" in raw or "graphics" in raw or "display" in raw:
+        return "Video"
+    if "network" in raw or "ethernet" in raw or "lan" in raw:
+        return "Network"
+    if "wireless" in raw or "wifi" in raw or "wlan" in raw or "bluetooth" in raw:
+        return "Network"
+    if "storage" in raw or "sata" in raw or "raid" in raw or "rst" in raw or "nvme" in raw:
+        return "Storage"
+    if "chipset" in raw or "serial" in raw or "usb" in raw:
+        return "Chipset"
+    if "input" in raw or "keyboard" in raw or "touchpad" in raw or "mouse" in raw:
+        return "Input"
+    if "security" in raw or "tpm" in raw:
+        return "Security"
+    if "software" in raw or "utility" in raw or "management" in raw:
+        return "Software"
+    return "Other"
+
+
 def _dedupe_latest_records(records: list[DriverRecord]) -> list[DriverRecord]:
     best: dict[str, DriverRecord] = {}
     for record in records:
@@ -350,13 +375,14 @@ class SubprocessRunner:
         return subprocess.run(command, capture_output=True, text=True, check=False)
 
 
-def _resolve_legacy_repo_root(root: str | Path | None) -> Path:
+def _resolve_legacy_repo_root(root: str | Path | None) -> Path | None:
     if root is None:
-        return Path(IMMUTABLE_CONFIG.ids.hp_legacy_repo_root)
+        cleaned_default = IMMUTABLE_CONFIG.ids.hp_legacy_repo_root.strip()
+        return Path(cleaned_default) if cleaned_default else None
     if isinstance(root, str):
         cleaned = root.strip()
         if not cleaned:
-            return Path(IMMUTABLE_CONFIG.ids.hp_legacy_repo_root)
+            return None
         return Path(cleaned)
     return Path(root)
 
@@ -657,6 +683,7 @@ class CMSLClient:
             category = item.get("Category", "")
             if "driver" not in category.lower() and "bios" not in category.lower() and "firmware" not in category.lower():
                 continue
+            bucket = _categorize_cmsl(category, item.get("Name", ""))
             records.append(
                 DriverRecord(
                     name=item.get("Name", "Unknown"),
@@ -664,7 +691,7 @@ class CMSLClient:
                     source="CMSL",
                     installed_version=None,
                     latest_version=item.get("Version"),
-                    category=category,
+                    category=bucket,
                     softpaq_id=item.get("Id") or item.get("SoftPaqId"),
                     download_url=item.get("Url"),
                 )
@@ -687,7 +714,12 @@ class LegacyRepository:
     def __init__(self, root: str | Path | None = None) -> None:
         self._root = _resolve_legacy_repo_root(root)
 
+    def is_configured(self) -> bool:
+        return self._root is not None
+
     def list_packages(self, platform_id: str | None, model: str | None) -> list[DriverRecord]:
+        if self._root is None:
+            return []
         candidates = []
         if platform_id:
             candidates.append(self._root / platform_id)
@@ -838,6 +870,9 @@ class DriverService:
     def scan_legacy(self) -> list[DriverRecord]:
         info = self._system_info_provider()
         self.last_scan_warnings = []
+        if not self._legacy.is_configured():
+            self.last_scan_warnings.append("Legacy repository root not configured. Set it in Drivers -> Legacy -> Settings.")
+            return []
         if not info.supports_legacy_repo:
             self.last_scan_warnings.append("Legacy repository not supported on this system.")
             return []
