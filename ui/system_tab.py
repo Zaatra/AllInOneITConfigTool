@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from services.system_config import ConfigCheckResult, SystemConfigService
+from services.system_config import ApplyStepResult, ConfigCheckResult, SystemConfigService
 from allinone_it_config.constants import FixedSystemConfig
 from ui.workers import ServiceWorker
 
@@ -80,6 +80,9 @@ class SystemTab(QWidget):
             return
         self._busy = True
         self._btn_apply.setEnabled(False)
+        for label in self._status_labels.values():
+            label.setText("Checking...")
+            label.setStyleSheet("")
         worker = ServiceWorker(self._service.check)
         worker.signals.finished.connect(self._handle_check_results)
         worker.signals.error.connect(self._handle_error)
@@ -114,11 +117,22 @@ class SystemTab(QWidget):
         self._track_worker(worker)
         self._thread_pool.start(worker)
 
-    def _run_apply(self) -> None:
-        self._service.apply()
+    def _run_apply(self) -> list[ApplyStepResult]:
+        return self._service.apply_with_results()
 
-    def _handle_apply_finished(self, _: object) -> None:
+    def _handle_apply_finished(self, results: list[ApplyStepResult] | None) -> None:
+        if results:
+            failures = 0
+            for result in results:
+                status = "OK" if result.success else "FAILED"
+                detail = f" - {result.detail}" if result.detail else ""
+                self._log(f"{result.name}: {status}{detail}")
+                if not result.success:
+                    failures += 1
+            if failures:
+                self._log(f"{failures} apply step(s) failed.")
         self._log("System configuration applied. Refreshing status...")
+        self._busy = False
         self._start_check()
 
     def _format_result_text(self, result: ConfigCheckResult) -> str:

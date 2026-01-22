@@ -28,6 +28,13 @@ class ConfigCheckResult:
     in_desired_state: bool
 
 
+@dataclass
+class ApplyStepResult:
+    name: str
+    success: bool
+    detail: str = ""
+
+
 class CommandRunner(Protocol):
     def run(self, command: Sequence[str]) -> subprocess.CompletedProcess[str]:  # pragma: no cover - protocol
         ...
@@ -113,15 +120,80 @@ class SystemConfigService:
         return results
 
     def apply(self) -> None:
-        self._set_timezone()
-        self._set_power_plan()
-        self._registry.set_value(
-            self._config.fast_boot.path,
-            self._config.fast_boot.value_name,
-            int(self._config.fast_boot.desired_value),
+        self.apply_with_results()
+
+    def apply_with_results(self) -> list[ApplyStepResult]:
+        results = [
+            self._apply_timezone(),
+            self._apply_power_plan(),
+            self._apply_fast_boot(),
+            self._apply_locale(),
+            self._apply_user_profile_settings(),
+        ]
+        return results
+
+    def _apply_timezone(self) -> ApplyStepResult:
+        expected = self._config.timezone
+        completed = self._runner.run(["tzutil", "/s", expected])
+        detail = self._format_command_detail(completed)
+        actual = self._run_and_capture(["tzutil", "/g"])
+        if actual:
+            detail = f"{detail}; current: {actual}"
+        success = completed.returncode == 0 and (not actual or actual == expected)
+        return ApplyStepResult("Timezone", success, detail)
+
+    def _apply_power_plan(self) -> ApplyStepResult:
+        expected = self._config.power_plan.friendly_name
+        completed = self._runner.run(["powercfg", "/setactive", self._config.power_plan.scheme])
+        detail = self._format_command_detail(completed)
+        active_output = self._run_and_capture(["powercfg", "/getactivescheme"])
+        active = self._extract_power_scheme_name(active_output)
+        if active:
+            detail = f"{detail}; active: {active}"
+        success = completed.returncode == 0 and (not active or expected.lower() in active.lower())
+        return ApplyStepResult("Power Plan", success, detail)
+
+    def _apply_fast_boot(self) -> ApplyStepResult:
+        try:
+            desired = int(self._config.fast_boot.desired_value)
+            self._registry.set_value(
+                self._config.fast_boot.path,
+                self._config.fast_boot.value_name,
+                desired,
+            )
+            actual = self._registry.get_value(self._config.fast_boot.path, self._config.fast_boot.value_name)
+            detail = f"set to {desired}; current: {actual}"
+            return ApplyStepResult("Fast Boot", actual == desired, detail)
+        except Exception as exc:  # pragma: no cover - surfaced via UI logging
+            return ApplyStepResult("Fast Boot", False, str(exc))
+
+    def _apply_locale(self) -> ApplyStepResult:
+        command = f"Set-WinSystemLocale -SystemLocale {shlex.quote(self._config.locale.system_locale)}"
+        completed = self._runner.run(["powershell", "-NoProfile", "-Command", command])
+        detail = self._format_command_detail(completed)
+        actual_locale = self._run_and_capture(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "Get-WinSystemLocale | Select-Object -ExpandProperty Name",
+            ]
         )
-        self._set_locale()
-        self._apply_user_profile_settings()
+        date_val = self._registry.get_value(r"HKCU:\Control Panel\International", "sShortDate") or ""
+        if actual_locale:
+            detail = f"{detail}; current: {actual_locale} / {date_val}"
+        success = completed.returncode == 0 and (
+            not actual_locale or actual_locale.lower() == self._config.locale.system_locale.lower()
+        )
+        return ApplyStepResult("Locale", success, detail)
+
+    def _apply_user_profile_settings(self) -> ApplyStepResult:
+        try:
+            self._apply_user_profile_settings_inner()
+        except Exception as exc:  # pragma: no cover - surfaced via UI logging
+            return ApplyStepResult("Default User Profile", False, str(exc))
+        result = self._check_default_user_profile()
+        return ApplyStepResult("Default User Profile", result.in_desired_state, result.actual)
 
     def _check_timezone(self) -> ConfigCheckResult:
         expected = self._config.timezone
@@ -190,17 +262,7 @@ class SystemConfigService:
         except RuntimeError as exc:
             return ConfigCheckResult("Default User Profile", expected, str(exc), False)
 
-    def _set_timezone(self) -> None:
-        self._run_and_check(["tzutil", "/s", self._config.timezone], "Set timezone")
-
-    def _set_power_plan(self) -> None:
-        self._run_and_check(["powercfg", "/setactive", self._config.power_plan.scheme], "Set power plan")
-
-    def _set_locale(self) -> None:
-        command = f"Set-WinSystemLocale -SystemLocale {shlex.quote(self._config.locale.system_locale)}"
-        self._run_and_check(["powershell", "-NoProfile", "-Command", command], "Set system locale")
-
-    def _apply_user_profile_settings(self) -> None:
+    def _apply_user_profile_settings_inner(self) -> None:
         self._registry.set_value(
             self._config.desktop_icons.path,
             self._config.desktop_icons.value_name,
@@ -225,6 +287,16 @@ class SystemConfigService:
             )
 
         self._with_default_user_hive(apply_to_default)
+
+    def _format_command_detail(self, completed: subprocess.CompletedProcess[str]) -> str:
+        detail_parts = [f"exit={completed.returncode}"]
+        stdout = (completed.stdout or "").strip()
+        stderr = (completed.stderr or "").strip()
+        if stdout:
+            detail_parts.append(f"stdout: {stdout}")
+        if stderr:
+            detail_parts.append(f"stderr: {stderr}")
+        return ", ".join(detail_parts)
 
     def _extract_power_scheme_name(self, output: str) -> str:
         if "(" in output and ")" in output:
