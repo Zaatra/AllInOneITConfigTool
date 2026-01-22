@@ -1,8 +1,10 @@
 """System configuration logic (timezone, locale, power, icons)."""
 from __future__ import annotations
 
+import re
 import shlex
 import subprocess
+import time
 from dataclasses import dataclass
 from typing import Callable, Iterable, Protocol, Sequence, TypeVar
 
@@ -16,6 +18,12 @@ except ImportError:  # pragma: no cover - not available on Linux runners
 DEFAULT_USER_HIVE_KEY = "AIO_DefaultUser"
 DEFAULT_USER_HIVE_PATH = r"C:\Users\Default\NTUSER.DAT"
 HKCU_PREFIX = "HKCU:\\"
+POWERCFG_GUID_PATTERN = re.compile(r"Power Scheme GUID:\s*([0-9a-fA-F-]{36})\s*\((.*?)\)\s*(\*)?")
+KNOWN_POWER_SCHEMES = {
+    "SCHEME_BALANCED": "381b4222-f694-41f0-9685-ff5bb260df2e",
+    "SCHEME_MIN": "a1841308-3541-4fab-bc81-f71556f20b4a",
+    "SCHEME_MAX": "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c",
+}
 
 T = TypeVar("T")
 
@@ -144,13 +152,34 @@ class SystemConfigService:
 
     def _apply_power_plan(self) -> ApplyStepResult:
         expected = self._config.power_plan.friendly_name
-        completed = self._runner.run(["powercfg", "/setactive", self._config.power_plan.scheme])
+        schemes = self._list_power_schemes()
+        target_guid, target_name = self._resolve_power_scheme(schemes)
+        target = target_guid or self._config.power_plan.scheme
+        completed = self._runner.run(["powercfg", "/setactive", target])
         detail = self._format_command_detail(completed)
-        active_output = self._run_and_capture(["powercfg", "/getactivescheme"])
-        active = self._extract_power_scheme_name(active_output)
-        if active:
-            detail = f"{detail}; active: {active}"
-        success = completed.returncode == 0 and (not active or expected.lower() in active.lower())
+        if schemes:
+            schemes_summary = ", ".join(
+                f"{name}={guid}{'*' if active else ''}" for guid, name, active in schemes
+            )
+            detail = f"{detail}; schemes: {schemes_summary}"
+        if target_guid:
+            detail = f"{detail}; target: {target_guid}"
+        elif target_name:
+            detail = f"{detail}; target: {target_name}"
+        else:
+            detail = f"{detail}; target: {target}"
+        active_guid, active_name = self._wait_for_active_scheme(target_guid)
+        if active_name or active_guid:
+            active_label = active_name or ""
+            if active_guid:
+                active_label = f"{active_label} ({active_guid})".strip()
+            detail = f"{detail}; active: {active_label}"
+        if target_guid and active_guid:
+            success = completed.returncode == 0 and active_guid.lower() == target_guid.lower()
+        elif target_name:
+            success = completed.returncode == 0 and target_name.lower() in (active_name or "").lower()
+        else:
+            success = completed.returncode == 0 and expected.lower() in (active_name or "").lower()
         return ApplyStepResult("Power Plan", success, detail)
 
     def _apply_fast_boot(self) -> ApplyStepResult:
@@ -202,9 +231,19 @@ class SystemConfigService:
 
     def _check_power_plan(self) -> ConfigCheckResult:
         expected = self._config.power_plan.friendly_name
-        output = self._run_and_capture(["powercfg", "/getactivescheme"])
-        actual = self._extract_power_scheme_name(output)
-        return ConfigCheckResult("Power Plan", expected, actual, expected.lower() in actual.lower())
+        active_guid, active_name = self._get_active_power_scheme()
+        schemes = self._list_power_schemes()
+        target_guid, target_name = self._resolve_power_scheme(schemes)
+        actual = active_name or ""
+        if active_guid and active_name:
+            actual = f"{active_name} ({active_guid})"
+        if target_guid and active_guid:
+            ok = active_guid.lower() == target_guid.lower()
+        elif target_name:
+            ok = target_name.lower() in (active_name or "").lower()
+        else:
+            ok = expected.lower() in (active_name or "").lower()
+        return ConfigCheckResult("Power Plan", expected, actual, ok)
 
     def _check_fast_boot(self) -> ConfigCheckResult:
         expected_value = int(self._config.fast_boot.desired_value)
@@ -299,9 +338,55 @@ class SystemConfigService:
         return ", ".join(detail_parts)
 
     def _extract_power_scheme_name(self, output: str) -> str:
+        match = POWERCFG_GUID_PATTERN.search(output)
+        if match:
+            return match.group(2).strip()
         if "(" in output and ")" in output:
             return output.split("(")[-1].split(")")[0].strip()
         return output.strip()
+
+    def _list_power_schemes(self) -> list[tuple[str, str, bool]]:
+        output = self._run_and_capture(["powercfg", "/list"])
+        schemes: list[tuple[str, str, bool]] = []
+        for match in POWERCFG_GUID_PATTERN.finditer(output):
+            guid = match.group(1).strip()
+            name = match.group(2).strip()
+            active = bool(match.group(3))
+            schemes.append((guid, name, active))
+        return schemes
+
+    def _get_active_power_scheme(self) -> tuple[str, str]:
+        output = self._run_and_capture(["powercfg", "/getactivescheme"])
+        match = POWERCFG_GUID_PATTERN.search(output)
+        if match:
+            return match.group(1).strip(), match.group(2).strip()
+        return "", self._extract_power_scheme_name(output)
+
+    def _resolve_power_scheme(
+        self, schemes: Iterable[tuple[str, str, bool]]
+    ) -> tuple[str, str]:
+        scheme = self._config.power_plan.scheme.strip()
+        friendly = self._config.power_plan.friendly_name.strip()
+        if POWERCFG_GUID_PATTERN.search(f"Power Scheme GUID: {scheme} (x)"):
+            return scheme, friendly
+        alias_guid = KNOWN_POWER_SCHEMES.get(scheme.upper())
+        if alias_guid:
+            return alias_guid, friendly
+        for guid, name, _active in schemes:
+            if name.lower() == friendly.lower():
+                return guid, name
+        return "", ""
+
+    def _wait_for_active_scheme(self, target_guid: str) -> tuple[str, str]:
+        active_guid, active_name = self._get_active_power_scheme()
+        if not target_guid:
+            return active_guid, active_name
+        for _ in range(5):
+            if active_guid and active_guid.lower() == target_guid.lower():
+                return active_guid, active_name
+            time.sleep(0.3)
+            active_guid, active_name = self._get_active_power_scheme()
+        return active_guid, active_name
 
     def _run_and_capture(self, command: Sequence[str]) -> str:
         completed = self._runner.run(command)

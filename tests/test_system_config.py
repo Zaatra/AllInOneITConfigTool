@@ -74,7 +74,10 @@ def test_apply_runs_commands_and_sets_registry() -> None:
     service.apply()
 
     assert ("tzutil", "/s", config.timezone) in runner.commands
-    assert ("powercfg", "/setactive", config.power_plan.scheme) in runner.commands
+    assert (
+        ("powercfg", "/setactive", config.power_plan.scheme) in runner.commands
+        or ("powercfg", "/setactive", "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c") in runner.commands
+    )
     locale_cmd = (
         "powershell",
         "-NoProfile",
