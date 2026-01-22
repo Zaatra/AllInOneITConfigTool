@@ -281,6 +281,11 @@ def get_installed_drivers_and_software(*, powershell: str = "powershell") -> dic
 def find_installed_version(driver_name: str, category: str | None, installed_cache: dict[str, InstalledItem]) -> str | None:
     driver_lower = driver_name.lower()
     driver_norm = _normalize_name(driver_name)
+    is_bios = bool(re.search(r"\bbios\b", driver_lower)) or (category and "bios" in category.lower())
+    if is_bios:
+        bios_item = installed_cache.get("system bios")
+        if bios_item and bios_item.version:
+            return bios_item.version
     search_terms: list[str] = []
     if "intel" in driver_lower:
         search_terms.append("intel")
@@ -323,6 +328,8 @@ def find_installed_version(driver_name: str, category: str | None, installed_cac
     best_score = 0
     for item_name, item_data in installed_cache.items():
         item_norm = _normalize_name(item_name)
+        if is_bios and not re.search(r"\bbios\b", item_norm):
+            continue
         if is_wireless_driver and "manageability" in item_norm and "manageability" not in driver_norm:
             continue
         score = 0
@@ -341,7 +348,9 @@ def find_installed_version(driver_name: str, category: str | None, installed_cac
                 score += 2
             if "storage" in cat_lower and re.search(r"storage|rapid|rst|raid|optane", item_norm):
                 score += 2
-            if re.search(r"bios|firmware", cat_lower) and re.search(r"bios|firmware", item_norm):
+            if "bios" in cat_lower and re.search(r"\bbios\b", item_norm):
+                score += 2
+            elif "firmware" in cat_lower and re.search(r"firmware", item_norm):
                 score += 2
         if score > best_score:
             best_score = score
@@ -984,30 +993,51 @@ class DriverService:
             self.last_scan_warnings.append("No legacy repository manifest found for this device.")
         return records
 
-    def download(self, records: Iterable[DriverRecord]) -> list[DriverOperationResult]:
+    def download(
+        self,
+        records: Iterable[DriverRecord],
+        *,
+        progress_callback: Callable[[int, int, str], None] | None = None,
+    ) -> list[DriverOperationResult]:
         ops: list[DriverOperationResult] = []
-        hpia_targets = [r for r in records if r.source == "HPIA" and r.softpaq_id]
-        cmsl_targets = [r for r in records if r.source == "CMSL" and r.softpaq_id]
-        legacy_targets = [r for r in records if r.source == "Legacy" and r.download_url]
+        record_list = list(records)
+        total = len(record_list)
+        completed = 0
+
+        def _emit(message: str) -> None:
+            nonlocal completed
+            completed += 1
+            if progress_callback:
+                progress_callback(completed, total, message)
+
+        hpia_targets = [r for r in record_list if r.source == "HPIA" and r.softpaq_id]
+        cmsl_targets = [r for r in record_list if r.source == "CMSL" and r.softpaq_id]
+        legacy_targets = [r for r in record_list if r.source == "Legacy" and r.download_url]
 
         if hpia_targets:
             try:
+                if progress_callback:
+                    progress_callback(completed, total, f"Downloading {len(hpia_targets)} HPIA package(s)...")
                 mapping = self._hpia.download([r.softpaq_id for r in hpia_targets if r.softpaq_id])
                 for record in hpia_targets:
                     record.output_path = mapping.get(record.softpaq_id)
                     success = record.output_path is not None
                     ops.append(DriverOperationResult(record, "download", success, "Downloaded" if success else "Missing output"))
+                    _emit(f"Downloaded: {record.name}" if success else f"Failed: {record.name}")
             except Exception as exc:
                 for record in hpia_targets:
                     ops.append(DriverOperationResult(record, "download", False, str(exc)))
+                    _emit(f"Failed: {record.name}")
 
         for record in cmsl_targets:
             try:
                 dest = self._working_dir / "cmsl_softpaqs" / f"{record.softpaq_id}.exe"
                 record.output_path = self._cmsl.download(record.softpaq_id or "", dest)
                 ops.append(DriverOperationResult(record, "download", True, "Downloaded"))
+                _emit(f"Downloaded: {record.name}")
             except Exception as exc:
                 ops.append(DriverOperationResult(record, "download", False, str(exc)))
+                _emit(f"Failed: {record.name}")
 
         for record in legacy_targets:
             try:
@@ -1018,20 +1048,39 @@ class DriverService:
                 shutil.copy2(src, dest)
                 record.output_path = dest  # type: ignore[assignment]
                 ops.append(DriverOperationResult(record, "download", True, "Copied"))
+                _emit(f"Copied: {record.name}")
             except Exception as exc:
                 ops.append(DriverOperationResult(record, "download", False, str(exc)))
+                _emit(f"Failed: {record.name}")
 
         return ops
 
-    def install(self, records: Iterable[DriverRecord]) -> list[DriverOperationResult]:
+    def install(
+        self,
+        records: Iterable[DriverRecord],
+        *,
+        progress_callback: Callable[[int, int, str], None] | None = None,
+    ) -> list[DriverOperationResult]:
         ops: list[DriverOperationResult] = []
-        for record in records:
+        record_list = list(records)
+        total = len(record_list)
+        completed = 0
+
+        def _emit(message: str) -> None:
+            nonlocal completed
+            completed += 1
+            if progress_callback:
+                progress_callback(completed, total, message)
+
+        for record in record_list:
             if not record.output_path:
                 ops.append(DriverOperationResult(record, "install", False, "No installer downloaded"))
+                _emit(f"Skipped: {record.name}")
                 continue
             cmd = [str(record.output_path), "/s"]
             result = self._runner.run(cmd)
             success = result.returncode in {0, 3010}
             message = "Installed" if success else f"Installer exit {result.returncode}"
             ops.append(DriverOperationResult(record, "install", success, message))
+            _emit(f"{message}: {record.name}")
         return ops

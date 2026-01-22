@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QTabWidget,
     QTableWidget,
@@ -126,6 +127,19 @@ class DriversTab(QWidget):
         button_row.addWidget(btn_select_none)
         layout.addLayout(button_row)
 
+        progress_row = QHBoxLayout()
+        progress_label = QLabel("")
+        progress_bar = QProgressBar()
+        progress_bar.setRange(0, 1)
+        progress_bar.setValue(0)
+        progress_bar.setTextVisible(True)
+        progress_bar.setFormat("%v/%m")
+        progress_label.setVisible(False)
+        progress_bar.setVisible(False)
+        progress_row.addWidget(progress_label)
+        progress_row.addWidget(progress_bar, 1)
+        layout.addLayout(progress_row)
+
         table = QTableWidget(0, 7, panel)
         table.setHorizontalHeaderLabels(["Select", "Source", "Name", "Category", "Installed", "Latest", "Status"])
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -158,6 +172,8 @@ class DriversTab(QWidget):
             "btn_select_none": btn_select_none,
             "btn_settings": btn_settings,
             "category_filter": filter_combo,
+            "progress_label": progress_label,
+            "progress_bar": progress_bar,
         }
 
     def _start_scan(self, source: str) -> None:
@@ -201,6 +217,48 @@ class DriversTab(QWidget):
         self._busy = False
         self._set_buttons_enabled(True)
 
+    def _progress_widgets(self, source: str) -> tuple[QLabel, QProgressBar] | None:
+        panel = self._panels.get(source.upper())
+        if not panel:
+            return None
+        label = panel.get("progress_label")
+        bar = panel.get("progress_bar")
+        if isinstance(label, QLabel) and isinstance(bar, QProgressBar):
+            return (label, bar)
+        return None
+
+    def _init_progress(self, source: str, total: int, message: str) -> None:
+        widgets = self._progress_widgets(source)
+        if not widgets:
+            return
+        label, bar = widgets
+        bar.setRange(0, max(total, 1))
+        bar.setValue(0)
+        label.setText(message)
+        label.setVisible(True)
+        bar.setVisible(True)
+
+    def _update_progress(self, source: str, current: int, total: int, message: str) -> None:
+        widgets = self._progress_widgets(source)
+        if not widgets:
+            return
+        label, bar = widgets
+        bar.setRange(0, max(total, 1))
+        bar.setValue(min(current, max(total, 1)))
+        label.setText(message)
+        label.setVisible(True)
+        bar.setVisible(True)
+
+    def _clear_progress(self, source: str) -> None:
+        widgets = self._progress_widgets(source)
+        if not widgets:
+            return
+        label, bar = widgets
+        label.setText("")
+        label.setVisible(False)
+        bar.setValue(0)
+        bar.setVisible(False)
+
     def _start_operation(self, source: str, op: str) -> None:
         if self._busy:
             QMessageBox.information(self, "In Progress", "Wait for the current operation to finish.")
@@ -214,9 +272,12 @@ class DriversTab(QWidget):
         self._set_buttons_enabled(False)
         action = self._service.download if op == "download" else self._service.install
         self._log(f"Running {op} for {len(selected)} driver(s) from {source}...")
+        self._init_progress(source, len(selected), f"{op.title()} starting...")
         worker = ServiceWorker(action, selected)
+        worker.kwargs["progress_callback"] = worker.signals.progress.emit
         worker.signals.finished.connect(lambda result, op=op, src=source: self._handle_driver_results(src, op, result))
         worker.signals.error.connect(self._handle_error)
+        worker.signals.progress.connect(lambda current, total, message, src=source: self._update_progress(src, current, total, message))
         self._track_worker(worker)
         self._thread_pool.start(worker)
 
@@ -226,6 +287,7 @@ class DriversTab(QWidget):
             self._log(f"[{status}] {op} :: {result.driver.name} -> {result.message}")
         if op == "download":
             self._populate_table(source)
+        self._clear_progress(source)
         self._busy = False
         self._set_buttons_enabled(True)
 
@@ -290,6 +352,8 @@ class DriversTab(QWidget):
     def _handle_error(self, message: str) -> None:
         self._busy = False
         self._set_buttons_enabled(True)
+        if self._last_action:
+            self._clear_progress(self._last_action[1])
         if self._maybe_prompt_legacy_credentials(message):
             return
         self._log(f"[ERROR] {message}")
