@@ -738,7 +738,7 @@ class LegacyRepository:
                 continue
             installed_cache = get_installed_drivers_and_software()
             for item in data:
-                file_name = item.get("File") or item.get("Path")
+                file_name = item.get("File") or item.get("Path") or item.get("FileName")
                 if not file_name:
                     continue
                 file_path = candidate / file_name

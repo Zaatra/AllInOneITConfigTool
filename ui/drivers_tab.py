@@ -66,6 +66,8 @@ class DriversTab(QWidget):
 
     def _refresh_service(self) -> None:
         legacy_root = self._settings.hp_legacy_repo_root.strip()
+        if legacy_root:
+            legacy_root = self._normalize_unc_path(legacy_root)
         self._service = DriverService(
             working_dir=self._working_dir,
             legacy_repo_root=legacy_root or None,
@@ -288,7 +290,7 @@ class DriversTab(QWidget):
         legacy_root = self._settings.hp_legacy_repo_root.strip()
         if not legacy_root:
             return False
-        share_path = self._extract_unc_path(message) or legacy_root
+        share_path = self._normalize_unc_path(self._extract_unc_path(message) or legacy_root)
         share_root = self._unc_share_root(share_path) or share_path
         if not share_root.startswith("\\\\"):
             return False
@@ -331,10 +333,20 @@ class DriversTab(QWidget):
             return raw.group(1)
         return None
 
+    def _normalize_unc_path(self, path: str) -> str:
+        cleaned = path.strip()
+        if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in ('"', "'"):
+            cleaned = cleaned[1:-1].strip()
+        if cleaned.startswith("//"):
+            cleaned = "\\\\" + cleaned.lstrip("/")
+        cleaned = cleaned.replace("/", "\\")
+        return cleaned
+
     def _unc_share_root(self, path: str) -> str | None:
-        if not path.startswith("\\\\"):
+        normalized = self._normalize_unc_path(path)
+        if not normalized.startswith("\\\\"):
             return None
-        parts = PureWindowsPath(path).parts
+        parts = PureWindowsPath(normalized).parts
         if not parts:
             return None
         return parts[0].rstrip("\\")
@@ -342,7 +354,9 @@ class DriversTab(QWidget):
     def _connect_to_share(self, share: str, username: str, password: str) -> tuple[bool, str]:
         if os.name != "nt":
             return (False, "Network credentials can only be applied on Windows.")
-        cmd = ["net", "use", share, password, f"/user:{username}", "/persistent:no"]
+        normalized = self._normalize_unc_path(share).rstrip("\\")
+        share_root = self._unc_share_root(normalized) or normalized
+        cmd = ["net", "use", share_root, password, f"/user:{username}", "/persistent:no"]
         result = subprocess.run(cmd, capture_output=True, text=True, check=False)
         if result.returncode == 0:
             return (True, "Connected")
