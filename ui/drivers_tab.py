@@ -186,6 +186,16 @@ class DriversTab(QWidget):
             self._update_category_filter(source, self._records_by_source[source.upper()])
         self._populate_table(source)
         self._log(f"{source} scan complete. Found {len(self._records_by_source[source.upper()])} entries.")
+        info = self._service.last_system_info
+        if info and (info.model or info.platform_id or info.sku):
+            details: list[str] = []
+            if info.model:
+                details.append(f"Model: {info.model}")
+            if info.platform_id:
+                details.append(f"Platform ID: {info.platform_id}")
+            if info.sku:
+                details.append(f"SKU: {info.sku}")
+            self._log(f"[INFO] Detected system: {' | '.join(details)}")
         for warning in self._service.last_scan_warnings:
             self._log(f"[WARN] {warning}")
         self._busy = False
