@@ -321,6 +321,9 @@ class DriversTab(QWidget):
             "winerror 1326",
             "user name or password is incorrect",
             "logon failure",
+            "winerror 67",
+            "system error 67",
+            "network name cannot be found",
         )
         return any(pattern in lowered for pattern in patterns)
 
@@ -342,6 +345,15 @@ class DriversTab(QWidget):
         cleaned = cleaned.replace("/", "\\")
         return cleaned
 
+    def _unc_server(self, path: str) -> str | None:
+        normalized = self._normalize_unc_path(path)
+        if not normalized.startswith("\\\\"):
+            return None
+        parts = normalized.lstrip("\\").split("\\", 1)
+        if not parts or not parts[0]:
+            return None
+        return parts[0]
+
     def _unc_share_root(self, path: str) -> str | None:
         normalized = self._normalize_unc_path(path)
         if not normalized.startswith("\\\\"):
@@ -356,12 +368,25 @@ class DriversTab(QWidget):
             return (False, "Network credentials can only be applied on Windows.")
         normalized = self._normalize_unc_path(share).rstrip("\\")
         share_root = self._unc_share_root(normalized) or normalized
-        cmd = ["net", "use", share_root, password, f"/user:{username}", "/persistent:no"]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        if result.returncode == 0:
-            return (True, "Connected")
-        detail = (result.stderr or result.stdout or "Unknown error").strip()
-        return (False, detail)
+        server = self._unc_server(normalized)
+        targets = [share_root]
+        if normalized != share_root:
+            targets.append(normalized)
+        if server:
+            targets.append(f"\\\\{server}\\IPC$")
+        seen: set[str] = set()
+        last_detail = "Unknown error"
+        for target in targets:
+            if target in seen:
+                continue
+            seen.add(target)
+            self._log(f"[REPO] net use {target}")
+            cmd = ["net", "use", target, password, f"/user:{username}", "/persistent:no"]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            if result.returncode == 0:
+                return (True, "Connected")
+            last_detail = (result.stderr or result.stdout or "Unknown error").strip()
+        return (False, last_detail)
 
     def _set_badge_cell(self, table: QTableWidget, row: int, column: int, text: str, palette: tuple[str, str, str]) -> None:
         label = QLabel(text)
