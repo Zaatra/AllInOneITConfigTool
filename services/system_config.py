@@ -200,20 +200,30 @@ class SystemConfigService:
         command = f"Set-WinSystemLocale -SystemLocale {shlex.quote(self._config.locale.system_locale)}"
         completed = self._runner.run(["powershell", "-NoProfile", "-Command", command])
         detail = self._format_command_detail(completed)
-        actual_locale = self._run_and_capture(
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                "Get-WinSystemLocale | Select-Object -ExpandProperty Name",
-            ]
-        )
+        ui_detail = self._apply_ui_languages()
+        if ui_detail:
+            detail = f"{detail}; ui languages: {ui_detail}"
+        date_error = None
+        try:
+            self._registry.set_value(
+                r"HKCU:\Control Panel\International",
+                "sShortDate",
+                self._config.locale.short_date_format,
+            )
+        except Exception as exc:  # pragma: no cover - surfaced via UI logging
+            date_error = str(exc)
+            detail = f"{detail}; date: {date_error}"
+        actual_locale = self._wait_for_system_locale(self._config.locale.system_locale)
         date_val = self._registry.get_value(r"HKCU:\Control Panel\International", "sShortDate") or ""
-        if actual_locale:
+        if actual_locale or date_val:
             detail = f"{detail}; current: {actual_locale} / {date_val}"
-        success = completed.returncode == 0 and (
-            not actual_locale or actual_locale.lower() == self._config.locale.system_locale.lower()
-        )
+        success = completed.returncode == 0
+        if actual_locale:
+            success = success and actual_locale.lower() == self._config.locale.system_locale.lower()
+        if date_val:
+            success = success and str(date_val).lower() == self._config.locale.short_date_format.lower()
+        if date_error:
+            success = False
         return ApplyStepResult("Locale", success, detail)
 
     def _apply_user_profile_settings(self) -> ApplyStepResult:
@@ -273,12 +283,12 @@ class SystemConfigService:
                 "Get-WinSystemLocale | Select-Object -ExpandProperty Name",
             ]
         )
+        date_val = self._registry.get_value(r"HKCU:\Control Panel\International", "sShortDate") or ""
+        actual_display = f"{actual} / {date_val}" if date_val else actual
         ok = expected.lower() == actual.lower()
-        if ok:
-            date_val = self._registry.get_value(r"HKCU:\Control Panel\International", "sShortDate") or ""
+        if date_val:
             ok = ok and str(date_val).lower() == self._config.locale.short_date_format.lower()
-            actual = f"{actual} / {date_val}"
-        return ConfigCheckResult("Locale", f"{expected} / {self._config.locale.short_date_format}", actual, ok)
+        return ConfigCheckResult("Locale", f"{expected} / {self._config.locale.short_date_format}", actual_display, ok)
 
     def _check_default_user_profile(self) -> ConfigCheckResult:
         expected_hide = int(self._config.desktop_icons.desired_value)
@@ -388,6 +398,47 @@ class SystemConfigService:
             active_guid, active_name = self._get_active_power_scheme()
         return active_guid, active_name
 
+    def _wait_for_system_locale(self, expected: str) -> str:
+        actual = self._run_and_capture(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "Get-WinSystemLocale | Select-Object -ExpandProperty Name",
+            ]
+        )
+        if not expected:
+            return actual
+        for _ in range(5):
+            if actual and actual.lower() == expected.lower():
+                return actual
+            time.sleep(0.3)
+            actual = self._run_and_capture(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    "Get-WinSystemLocale | Select-Object -ExpandProperty Name",
+                ]
+            )
+        return actual
+
+    def _apply_ui_languages(self) -> str | None:
+        languages = tuple(lang for lang in self._config.locale.ui_languages if lang)
+        if not languages:
+            return None
+        first, *rest = languages
+        parts = [f"$list = New-WinUserLanguageList -Language {_ps_quote(first)}"]
+        for lang in rest:
+            parts.append(f"$list.Add({_ps_quote(lang)})")
+        parts.append("Set-WinUserLanguageList -LanguageList $list -Force")
+        script = "; ".join(parts)
+        completed = self._runner.run(["powershell", "-NoProfile", "-Command", script])
+        detail = self._format_command_detail(completed)
+        if completed.returncode != 0 or completed.stdout or completed.stderr:
+            return detail
+        return None
+
     def _run_and_capture(self, command: Sequence[str]) -> str:
         completed = self._runner.run(command)
         if completed.stderr and not completed.stdout:
@@ -418,3 +469,7 @@ class SystemConfigService:
             raise ValueError(f"Expected HKCU path, got: {path}")
         suffix = path[len(HKCU_PREFIX) :]
         return f"{root}\\{suffix}"
+
+
+def _ps_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"

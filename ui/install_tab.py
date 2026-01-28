@@ -384,6 +384,7 @@ class InstallTab(QWidget):
             status_text, level = self._status_for_installed(info)
             self._set_item_text(row, self.COL_STATUS, status_text)
             self._apply_status_color(row, level)
+        self._refresh_offline_status()
         self._busy = False
         self._set_buttons_enabled(True)
 
@@ -391,7 +392,7 @@ class InstallTab(QWidget):
         if self._busy:
             QMessageBox.information(self, "In Progress", "Please wait for the current operation to complete.")
             return
-        self._refresh_offline_status()
+        self._start_installed_scan()
 
     def _refresh_offline_status(self) -> None:
         for app in self._registry.entries:
@@ -454,8 +455,7 @@ class InstallTab(QWidget):
             self._set_item_text(row, self.COL_LATEST, "Checking...")
             self._set_item_text(row, self.COL_STATUS, "Checking")
             self._apply_status_color(row, "checking")
-        installed_map = dict(self._installed_map) or None
-        worker = ServiceWorker(self._status_service.check_updates, installed_map)
+        worker = ServiceWorker(self._status_service.check_updates)
         worker.kwargs["progress_callback"] = worker.signals.progress.emit
         worker.signals.finished.connect(self._handle_update_results)
         worker.signals.error.connect(self._handle_error)
