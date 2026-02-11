@@ -51,9 +51,9 @@ CONFIG_ROOT = Path(__file__).resolve().parent
 FIXED_SYSTEM_CONFIG = FixedSystemConfig(
     timezone="West Bank Standard Time",
     locale=LocaleSetting(
-        system_locale="ar-SA",
+        system_locale="en-US",
         short_date_format="dd/MM/yyyy",
-        ui_languages=("ar-SA", "en-US"),
+        ui_languages=("en-US", "ar-SA"),
     ),
     power_plan=PowerPlanSetting(
         scheme="SCHEME_MAX",

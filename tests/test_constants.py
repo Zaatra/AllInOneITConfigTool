@@ -12,9 +12,9 @@ def test_timezone_is_west_bank() -> None:
 
 def test_locale_defaults() -> None:
     locale = IMMUTABLE_CONFIG.system.locale
-    assert locale.system_locale == "ar-SA"
+    assert locale.system_locale == "en-US"
     assert locale.short_date_format == "dd/MM/yyyy"
-    assert locale.ui_languages == ("ar-SA", "en-US")
+    assert locale.ui_languages == ("en-US", "ar-SA")
 
 
 def test_crowdstrike_args_empty_by_default() -> None:

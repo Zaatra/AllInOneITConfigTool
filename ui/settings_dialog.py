@@ -1,6 +1,7 @@
 """Settings dialog for user-provided installer values."""
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -155,6 +156,14 @@ class SettingsDialog(QDialog):
 
         layout.addLayout(form)
 
+        import_export_row = QHBoxLayout()
+        self._btn_import = QPushButton("Import...")
+        self._btn_export = QPushButton("Export...")
+        import_export_row.addWidget(self._btn_import)
+        import_export_row.addWidget(self._btn_export)
+        import_export_row.addStretch()
+        layout.addLayout(import_export_row)
+
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
@@ -175,6 +184,8 @@ class SettingsDialog(QDialog):
         self._winrar_license.textChanged.connect(self._update_validation)
         self._hp_legacy_repo.textChanged.connect(self._update_validation)
         self._java_version.currentTextChanged.connect(self._update_validation)
+        self._btn_import.clicked.connect(self._import_settings)
+        self._btn_export.clicked.connect(self._export_settings)
         self._update_teamviewer_msi_args()
         self._update_teamviewer_mode_ui()
         self._update_validation()
@@ -214,37 +225,109 @@ class SettingsDialog(QDialog):
             field.setText(path)
 
     def _save(self) -> None:
-        cid_value = self._crowdstrike_cid.text().strip()
-        if cid_value.upper().startswith("CID="):
-            cid_value = cid_value[4:].strip()
-        self._settings.crowdstrike_cid = cid_value
-        self._settings.crowdstrike_download_url = self._crowdstrike_url.text().strip()
-        self._settings.forticlient_download_url = self._forticlient_url.text().strip()
-        self._settings.office_2024_xml_path = self._office_2024_path.text().strip()
-        self._settings.office_365_xml_path = self._office_365_path.text().strip()
-        self._settings.odt_setup_path = self._odt_setup_path.text().strip()
-        self._settings.winrar_license_path = self._winrar_license.text().strip()
-        self._settings.hp_legacy_repo_root = self._hp_legacy_repo.text().strip()
-        self._settings.java_version = self._java_version.currentText().strip()
-        teamviewer_mode = self._teamviewer_mode.currentData() or "winget"
-        teamviewer_msi_path = self._teamviewer_msi_path.text().strip()
-        teamviewer_customconfig = self._teamviewer_customconfig.text().strip()
-        teamviewer_assignment = self._teamviewer_assignment.text().strip()
-        teamviewer_settings_file = self._teamviewer_settings_file.text().strip()
+        next_settings = self._settings_from_fields()
+        teamviewer_mode = next_settings.teamviewer_install_mode
         if teamviewer_mode == "msi":
             missing = self._teamviewer_msi_issues()
             if missing:
                 message = "TeamViewer MSI settings missing:\n" + "\n".join(f"- {item}" for item in missing)
                 QMessageBox.warning(self, "Settings Required", message)
                 return
-        self._settings.teamviewer_install_mode = str(teamviewer_mode)
-        self._settings.teamviewer_args = self._teamviewer_args.text().strip()
-        self._settings.teamviewer_msi_path = teamviewer_msi_path
-        self._settings.teamviewer_customconfig_id = teamviewer_customconfig
-        self._settings.teamviewer_assignment_id = teamviewer_assignment
-        self._settings.teamviewer_settings_file = teamviewer_settings_file
+        for key, value in next_settings.to_dict().items():
+            setattr(self._settings, key, value)
         self._store.save(self._settings)
         self.accept()
+
+    def _import_settings(self) -> None:
+        start_dir = str(self._store.path.parent if self._store.path.parent.exists() else Path.home())
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import Settings",
+            start_dir,
+            "JSON Files (*.json);;All Files (*)",
+        )
+        if not path:
+            return
+        try:
+            payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        except Exception as exc:
+            QMessageBox.warning(self, "Import Failed", f"Unable to read settings file:\n{exc}")
+            return
+        if not isinstance(payload, dict):
+            QMessageBox.warning(self, "Import Failed", "Settings file must contain a JSON object.")
+            return
+        loaded = UserSettings.from_dict(payload)
+        self._set_fields_from_settings(loaded)
+        self._update_validation()
+        QMessageBox.information(self, "Import Complete", "Settings loaded. Click Save to apply them.")
+
+    def _export_settings(self) -> None:
+        start_dir = str(self._store.path.parent if self._store.path.parent.exists() else Path.home())
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Settings",
+            str(Path(start_dir) / "settings-export.json"),
+            "JSON Files (*.json);;All Files (*)",
+        )
+        if not path:
+            return
+        export_settings = self._settings_from_fields()
+        try:
+            Path(path).write_text(
+                json.dumps(export_settings.to_dict(), indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Export Failed", f"Unable to write settings file:\n{exc}")
+            return
+        QMessageBox.information(self, "Export Complete", f"Settings exported to:\n{path}")
+
+    def _settings_from_fields(self) -> UserSettings:
+        cid_value = self._crowdstrike_cid.text().strip()
+        if cid_value.upper().startswith("CID="):
+            cid_value = cid_value[4:].strip()
+        teamviewer_mode = self._teamviewer_mode.currentData() or "winget"
+        return UserSettings(
+            crowdstrike_cid=cid_value,
+            crowdstrike_download_url=self._crowdstrike_url.text().strip(),
+            forticlient_download_url=self._forticlient_url.text().strip(),
+            office_2024_xml_path=self._office_2024_path.text().strip(),
+            office_365_xml_path=self._office_365_path.text().strip(),
+            odt_setup_path=self._odt_setup_path.text().strip(),
+            winrar_license_path=self._winrar_license.text().strip(),
+            java_version=self._java_version.currentText().strip(),
+            teamviewer_args=self._teamviewer_args.text().strip(),
+            hp_legacy_repo_root=self._hp_legacy_repo.text().strip(),
+            teamviewer_install_mode=str(teamviewer_mode),
+            teamviewer_msi_path=self._teamviewer_msi_path.text().strip(),
+            teamviewer_customconfig_id=self._teamviewer_customconfig.text().strip(),
+            teamviewer_assignment_id=self._teamviewer_assignment.text().strip(),
+            teamviewer_settings_file=self._teamviewer_settings_file.text().strip(),
+        )
+
+    def _set_fields_from_settings(self, settings: UserSettings) -> None:
+        self._crowdstrike_cid.setText(settings.crowdstrike_cid)
+        self._crowdstrike_url.setText(settings.crowdstrike_download_url)
+        self._forticlient_url.setText(settings.forticlient_download_url)
+        self._office_2024_path.setText(settings.office_2024_xml_path)
+        self._office_365_path.setText(settings.office_365_xml_path)
+        self._odt_setup_path.setText(settings.odt_setup_path)
+        self._winrar_license.setText(settings.winrar_license_path)
+        self._hp_legacy_repo.setText(settings.hp_legacy_repo_root)
+        self._java_version.setCurrentText(settings.java_version)
+        mode = settings.teamviewer_install_mode.strip().lower()
+        if mode != "msi":
+            mode = "winget"
+        index = self._teamviewer_mode.findData(mode)
+        if index >= 0:
+            self._teamviewer_mode.setCurrentIndex(index)
+        self._teamviewer_args.setText(settings.teamviewer_args)
+        self._teamviewer_msi_path.setText(settings.teamviewer_msi_path)
+        self._teamviewer_customconfig.setText(settings.teamviewer_customconfig_id)
+        self._teamviewer_assignment.setText(settings.teamviewer_assignment_id)
+        self._teamviewer_settings_file.setText(settings.teamviewer_settings_file)
+        self._update_teamviewer_msi_args()
+        self._update_teamviewer_mode_ui()
 
     def _update_teamviewer_mode_ui(self) -> None:
         use_msi = self._teamviewer_mode.currentData() == "msi"

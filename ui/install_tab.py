@@ -76,6 +76,9 @@ class InstallTab(QWidget):
         self._action_total = 0
         self._action_app = ""
         self._action_started_at: float | None = None
+        self._last_update_check_app = ""
+        self._last_speed_message = ""
+        self._last_speed_log_at: float = 0.0
         self._build_ui()
         self._start_installed_scan()
 
@@ -446,6 +449,7 @@ class InstallTab(QWidget):
         self._busy = True
         self._set_buttons_enabled(False)
         self._log("Checking latest application versions...")
+        self._last_update_check_app = ""
         total = self._table.rowCount()
         self._update_progress.setRange(0, total)
         self._update_progress.setValue(0)
@@ -465,6 +469,7 @@ class InstallTab(QWidget):
 
     def _handle_update_results(self, results: Iterable[AppUpdateResult]) -> None:
         results_list = list(results)
+        self._last_update_check_app = ""
         self._latest_versions = {result.app.name: result.latest_text for result in results_list}
         for result in results_list:
             row = self._row_by_name.get(result.app.name)
@@ -480,9 +485,22 @@ class InstallTab(QWidget):
         self._refresh_offline_status()
 
     def _handle_update_progress(self, current: int, total: int, app_name: str) -> None:
+        if app_name.startswith("START:"):
+            current_app = app_name.split(":", 1)[1].strip()
+            if current_app and current_app != self._last_update_check_app:
+                self._last_update_check_app = current_app
+                self._log(f"Checking for update {current_app}...")
+            if current_app:
+                self._update_progress.setFormat(f"Checking updates... %v/%m (%p%) | {current_app}")
+            if total > 0:
+                self._update_progress.setRange(0, total)
+            self._update_progress.setValue(current)
+            return
         if total > 0:
             self._update_progress.setRange(0, total)
         self._update_progress.setValue(current)
+        if app_name:
+            self._update_progress.setFormat(f"Checking updates... %v/%m (%p%) | {app_name}")
 
     def _handle_action_progress(self, current: int, total: int, app_name: str) -> None:
         self._action_current = current
@@ -498,6 +516,15 @@ class InstallTab(QWidget):
             return
         self._action_app = message
         self._update_action_progress_text()
+        if self._action_label != "Downloading":
+            return
+        if not _looks_like_speed_message(message):
+            return
+        now = time.monotonic()
+        if message != self._last_speed_message or (now - self._last_speed_log_at) >= 1.5:
+            self._last_speed_message = message
+            self._last_speed_log_at = now
+            self._log(f"[SPEED] {message}")
 
     def _tick_action_timer(self) -> None:
         if not self._action_progress.isVisible():
@@ -511,6 +538,8 @@ class InstallTab(QWidget):
         self._action_current = 0
         self._action_app = ""
         self._action_started_at = time.monotonic()
+        self._last_speed_message = ""
+        self._last_speed_log_at = 0.0
         self._action_progress.setRange(0, self._action_total)
         self._action_progress.setValue(0)
         self._action_progress.setVisible(True)
@@ -607,6 +636,11 @@ def _format_elapsed(total_seconds: int) -> str:
     if hours:
         return f"{hours}:{minutes:02d}:{seconds:02d}"
     return f"{minutes:02d}:{seconds:02d}"
+
+
+def _looks_like_speed_message(message: str) -> bool:
+    text = message.lower()
+    return "downloading " in text and "/s" in text
 
 
 def _is_sharepoint_url(value: str) -> bool:

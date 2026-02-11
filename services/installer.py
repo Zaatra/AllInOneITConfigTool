@@ -1574,7 +1574,7 @@ def _format_speed(value: float) -> str:
 
 
 def _format_speed_label(label: str, speed_bytes_per_sec: float) -> str:
-    return f"{label} ({_format_speed(speed_bytes_per_sec)})"
+    return f"Downloading {label}: {_format_speed(speed_bytes_per_sec)}"
 
 
 def _run_office_download(

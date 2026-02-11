@@ -58,8 +58,9 @@ class SystemTab(QWidget):
             ("Power Plan", "Active power profile"),
             ("Fast Boot", "Fast startup registry"),
             ("Desktop Icons", "Desktop icon visibility"),
-            ("Locale", "System locale & date format"),
+            ("Locale", "Locale, date format, and language features"),
             ("Default User Profile", "Default user profile (new users)"),
+            ("Default Apps", "Chrome/Outlook default associations"),
         ]
         for row, (key, caption) in enumerate(entries):
             label = QLabel(caption)

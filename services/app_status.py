@@ -219,6 +219,8 @@ class AppStatusService:
         results: list[AppUpdateResult] = []
         total = len(self._apps)
         for index, app in enumerate(self._apps, start=1):
+            if progress_callback:
+                progress_callback(index - 1, total, f"START:{app.name}")
             info = installed_map.get(app.name)
             if info is None:
                 info = InstalledInfo(
