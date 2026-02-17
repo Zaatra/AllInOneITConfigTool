@@ -4,10 +4,7 @@ import subprocess
 from pathlib import Path
 from typing import Sequence
 
-import pytest
-
 from services.drivers import (
-    DriverOperationResult,
     DriverRecord,
     DriverService,
     HPSystemInfo,
@@ -83,30 +80,14 @@ class FakeCMSLClient:
         return destination
 
 
-class FakeLegacyRepo:
-    def list_packages(self, platform_id: str | None, model: str | None) -> list[DriverRecord]:
-        return [
-            DriverRecord(
-                name="Legacy Driver",
-                status="Legacy",
-                source="Legacy",
-                installed_version=None,
-                latest_version="1.0",
-                download_url=str(Path("/repo/legacy.exe")),
-            )
-        ]
-
-
 def _service(tmp_path: Path) -> DriverService:
     fake_hpia = FakeHPIAClient()
     fake_cmsl = FakeCMSLClient()
-    legacy = FakeLegacyRepo()
     info = HPSystemInfo(platform_id="1234", model="HP Test", supports_hpia=True, supports_cmsl=True)
     return DriverService(
         working_dir=tmp_path,
         hpia_client=fake_hpia,
         cmsl_client=fake_cmsl,
-        legacy_repo=legacy,
         system_info_provider=lambda: info,
     )
 
@@ -123,11 +104,9 @@ def test_download_routes_by_source(tmp_path: Path) -> None:
     records = [
         DriverRecord("HPIA Driver", "Critical", "HPIA", "1", "2", softpaq_id="SP111"),
         DriverRecord("CMSL Driver", "Available", "CMSL", None, "1", softpaq_id="SP222"),
-        DriverRecord("Legacy Driver", "Legacy", "Legacy", None, "1", download_url=str(Path(tmp_path, "legacy.exe"))),
     ]
-    Path(tmp_path, "legacy.exe").write_text("legacy")
     ops = service.download(records)
-    assert len([op for op in ops if op.success]) == 3
+    assert len([op for op in ops if op.success]) == 2
     assert all(record.output_path for record in records)
 
 
@@ -137,12 +116,11 @@ def test_install_runs_downloaded_packages(tmp_path: Path) -> None:
         working_dir=tmp_path,
         hpia_client=FakeHPIAClient(),
         cmsl_client=FakeCMSLClient(),
-        legacy_repo=FakeLegacyRepo(),
         command_runner=runner,
         system_info_provider=lambda: HPSystemInfo(),
     )
-    record = DriverRecord("Legacy Driver", "Legacy", "Legacy", None, "1")
-    record.output_path = tmp_path / "legacy.exe"
+    record = DriverRecord("CMSL Driver", "Installed", "CMSL", None, "1")
+    record.output_path = tmp_path / "cmsl.exe"
     record.output_path.write_text("echo")
     results = service.install([record])
     assert results[0].success

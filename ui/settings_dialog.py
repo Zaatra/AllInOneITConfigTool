@@ -88,10 +88,6 @@ class SettingsDialog(QDialog):
             self._make_path_picker(self._winrar_license, "Select WinRAR License", "Key Files (*.key);;All Files (*)"),
         )
 
-        self._hp_legacy_repo = QLineEdit(self._settings.hp_legacy_repo_root)
-        self._hp_legacy_repo_label = QLabel("HP Legacy Repo Root")
-        form.addRow(self._hp_legacy_repo_label, self._make_dir_picker(self._hp_legacy_repo, "Select HP Legacy Repo Root"))
-
         self._java_version = QComboBox()
         self._java_version.setEditable(True)
         self._java_version.setCurrentText(self._settings.java_version)
@@ -183,7 +179,6 @@ class SettingsDialog(QDialog):
         self._office_365_path.textChanged.connect(self._update_validation)
         self._odt_setup_path.textChanged.connect(self._update_validation)
         self._winrar_license.textChanged.connect(self._update_validation)
-        self._hp_legacy_repo.textChanged.connect(self._update_validation)
         self._java_version.currentTextChanged.connect(self._update_validation)
         self._btn_import.clicked.connect(self._import_settings)
         self._btn_export.clicked.connect(self._export_settings)
@@ -201,27 +196,10 @@ class SettingsDialog(QDialog):
         row.addWidget(browse)
         return container
 
-    def _make_dir_picker(self, field: QLineEdit, title: str) -> QWidget:
-        container = QWidget()
-        row = QHBoxLayout(container)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.addWidget(field)
-        browse = QPushButton("Browse")
-        browse.clicked.connect(lambda: self._browse_for_dir(field, title))
-        row.addWidget(browse)
-        return container
-
     def _browse_for_path(self, field: QLineEdit, title: str, filter_text: str) -> None:
         current = field.text().strip()
         start_dir = str(Path(current).parent) if current else str(Path.home())
         path, _ = QFileDialog.getOpenFileName(self, title, start_dir, filter_text)
-        if path:
-            field.setText(path)
-
-    def _browse_for_dir(self, field: QLineEdit, title: str) -> None:
-        current = field.text().strip()
-        start_dir = current or str(Path.home())
-        path = QFileDialog.getExistingDirectory(self, title, start_dir)
         if path:
             field.setText(path)
 
@@ -298,7 +276,6 @@ class SettingsDialog(QDialog):
             winrar_license_path=self._winrar_license.text().strip(),
             java_version=self._java_version.currentText().strip(),
             teamviewer_args=self._teamviewer_args.text().strip(),
-            hp_legacy_repo_root=self._hp_legacy_repo.text().strip(),
             teamviewer_install_mode=str(teamviewer_mode),
             teamviewer_msi_path=self._teamviewer_msi_path.text().strip(),
             teamviewer_customconfig_id=self._teamviewer_customconfig.text().strip(),
@@ -314,7 +291,6 @@ class SettingsDialog(QDialog):
         self._office_365_path.setText(settings.office_365_xml_path)
         self._odt_setup_path.setText(settings.odt_setup_path)
         self._winrar_license.setText(settings.winrar_license_path)
-        self._hp_legacy_repo.setText(settings.hp_legacy_repo_root)
         self._java_version.setCurrentText(settings.java_version)
         mode = settings.teamviewer_install_mode.strip().lower()
         if mode != "msi":
@@ -399,7 +375,6 @@ class SettingsDialog(QDialog):
             self._is_file_valid(self._odt_setup_path.text(), suffixes=(".exe",), allow_empty=True),
         )
         self._set_label_valid(self._winrar_license_label, self._is_file_valid(self._winrar_license.text(), suffixes=(".key",)))
-        self._set_label_valid(self._hp_legacy_repo_label, self._is_dir_valid(self._hp_legacy_repo.text(), allow_empty=True))
         self._set_label_valid(self._java_version_label, self._is_java_version_valid())
         self._set_label_valid(self._teamviewer_mode_label, True)
         self._set_label_valid(self._teamviewer_args_label, (not use_msi) or not self._teamviewer_msi_issues())
@@ -440,25 +415,11 @@ class SettingsDialog(QDialog):
             return False
         return self._path_is_file(path)
 
-    def _is_dir_valid(self, value: str, *, allow_empty: bool = False) -> bool:
-        cleaned = self._clean_path_value(value)
-        if not cleaned:
-            return allow_empty
-        path = Path(cleaned)
-        return self._path_is_dir(path)
-
     def _path_is_file(self, path: Path) -> bool:
         try:
             return path.exists() and path.is_file()
         except OSError as exc:
             self._warn_inaccessible_path(path, exc, expected="file")
-            return False
-
-    def _path_is_dir(self, path: Path) -> bool:
-        try:
-            return path.exists() and path.is_dir()
-        except OSError as exc:
-            self._warn_inaccessible_path(path, exc, expected="folder")
             return False
 
     def _warn_inaccessible_path(self, path: Path, exc: OSError, *, expected: str) -> None:

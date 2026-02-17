@@ -36,14 +36,8 @@ class FixedSystemConfig:
 
 
 @dataclass(frozen=True)
-class GlobalIds:
-    hp_legacy_repo_root: str
-
-
-@dataclass(frozen=True)
 class ImmutableConfig:
     system: FixedSystemConfig
-    ids: GlobalIds
 
 
 CONFIG_ROOT = Path(__file__).resolve().parent
@@ -71,11 +65,6 @@ FIXED_SYSTEM_CONFIG = FixedSystemConfig(
     ),
 )
 
-GLOBAL_IDS = GlobalIds(
-    hp_legacy_repo_root="",
-)
-
 IMMUTABLE_CONFIG = ImmutableConfig(
     system=FIXED_SYSTEM_CONFIG,
-    ids=GLOBAL_IDS,
 )

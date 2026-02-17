@@ -26,7 +26,6 @@ class UserSettings:
     winrar_license_path: str = ""
     java_version: str = ""
     teamviewer_args: str = ""
-    hp_legacy_repo_root: str = ""
     teamviewer_install_mode: str = ""
     teamviewer_msi_path: str = ""
     teamviewer_customconfig_id: str = ""
@@ -44,7 +43,6 @@ class UserSettings:
             "winrar_license_path": self.winrar_license_path,
             "java_version": self.java_version,
             "teamviewer_args": self.teamviewer_args,
-            "hp_legacy_repo_root": self.hp_legacy_repo_root,
             "teamviewer_install_mode": self.teamviewer_install_mode,
             "teamviewer_msi_path": self.teamviewer_msi_path,
             "teamviewer_customconfig_id": self.teamviewer_customconfig_id,
@@ -68,7 +66,6 @@ class UserSettings:
             winrar_license_path=_get("winrar_license_path"),
             java_version=_get("java_version"),
             teamviewer_args=_get("teamviewer_args"),
-            hp_legacy_repo_root=_get("hp_legacy_repo_root"),
             teamviewer_install_mode=_get("teamviewer_install_mode"),
             teamviewer_msi_path=_get("teamviewer_msi_path"),
             teamviewer_customconfig_id=_get("teamviewer_customconfig_id"),

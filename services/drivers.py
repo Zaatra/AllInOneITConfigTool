@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Protocol, Sequence
 
-from allinone_it_config.constants import IMMUTABLE_CONFIG
 from allinone_it_config.paths import get_application_directory
 
 try:
@@ -54,7 +53,6 @@ class HPSystemInfo:
     os_build: str | None = None
     supports_hpia: bool = False
     supports_cmsl: bool = False
-    supports_legacy_repo: bool = True
 
 
 @dataclass
@@ -384,18 +382,6 @@ class SubprocessRunner:
         return subprocess.run(command, capture_output=True, text=True, check=False)
 
 
-def _resolve_legacy_repo_root(root: str | Path | None) -> Path | None:
-    if root is None:
-        cleaned_default = IMMUTABLE_CONFIG.ids.hp_legacy_repo_root.strip()
-        return Path(cleaned_default) if cleaned_default else None
-    if isinstance(root, str):
-        cleaned = root.strip()
-        if not cleaned:
-            return None
-        return Path(cleaned)
-    return Path(root)
-
-
 def _download_file(url: str, destination: Path) -> None:
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -719,167 +705,13 @@ class CMSLClient:
         return destination
 
 
-class LegacyRepository:
-    def __init__(self, root: str | Path | None = None) -> None:
-        self._root = _resolve_legacy_repo_root(root)
-        self.last_match_detail: str | None = None
-
-    def _normalize_folder_name(self, value: str) -> str:
-        return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
-
-    def _score_candidate(self, folder_name: str, platform_id: str | None, model: str | None) -> int:
-        score = 0
-        folder_norm = self._normalize_folder_name(folder_name)
-        folder_tokens = set(folder_norm.split())
-
-        if platform_id:
-            pid_norm = self._normalize_folder_name(platform_id)
-            if pid_norm:
-                if folder_norm == pid_norm:
-                    score += 100
-                elif pid_norm in folder_norm:
-                    score += 60
-
-        variants: list[str] = []
-        if model:
-            variants.append(model)
-            variants.append(model.replace("HP ", "").replace("Hewlett-Packard ", ""))
-
-        for variant in variants:
-            model_norm = self._normalize_folder_name(variant)
-            if not model_norm:
-                continue
-            if folder_norm == model_norm:
-                score += 80
-            elif model_norm in folder_norm:
-                score += 50
-            model_tokens = set(model_norm.split())
-            if model_tokens and folder_tokens:
-                score += len(folder_tokens & model_tokens) * 5
-
-        return score
-
-    def is_configured(self) -> bool:
-        return self._root is not None
-
-    def list_packages(self, platform_id: str | None, model: str | None) -> list[DriverRecord]:
-        self.last_match_detail = None
-        if self._root is None:
-            return []
-        candidates = []
-        if platform_id:
-            candidates.append(self._root / platform_id)
-        if model:
-            candidates.append(self._root / model)
-            clean = model.replace("HP ", "").replace("Hewlett-Packard ", "")
-            candidates.append(self._root / clean)
-        records: list[DriverRecord] = []
-        for candidate in candidates:
-            manifest = candidate / "manifest.json"
-            if not manifest.exists():
-                continue
-            try:
-                data = json.loads(manifest.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                continue
-            installed_cache = get_installed_drivers_and_software()
-            for item in data:
-                file_name = item.get("File") or item.get("Path") or item.get("FileName")
-                if not file_name:
-                    continue
-                file_path = candidate / file_name
-                driver_name = item.get("Name", "Legacy Driver")
-                category = item.get("Category")
-                available_ver = item.get("Version")
-                status_result, installed_ver = get_driver_status(driver_name, category, available_ver, installed_cache)
-                if "bios" in category.lower() and status_result == "Update Available":
-                    status_result = "Critical"
-                records.append(
-                    DriverRecord(
-                        name=driver_name,
-                        status=status_result,
-                        source="Legacy",
-                        installed_version=installed_ver,
-                        latest_version=available_ver,
-                        category=category,
-                        softpaq_id=item.get("SoftPaqId"),
-                        download_url=str(file_path),
-                        output_path=file_path,
-                    )
-                )
-            if records:
-                break
-        if records:
-            return records
-
-        # Fallback: scan all immediate subfolders for a manifest and pick the best match.
-        matches: list[tuple[int, Path, list[DriverRecord]]] = []
-        try:
-            subdirs = [p for p in self._root.iterdir() if p.is_dir()]
-        except OSError:
-            subdirs = []
-        for subdir in subdirs:
-            manifest = subdir / "manifest.json"
-            if not manifest.exists():
-                continue
-            try:
-                data = json.loads(manifest.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                continue
-            installed_cache = get_installed_drivers_and_software()
-            sub_records: list[DriverRecord] = []
-            for item in data:
-                file_name = item.get("File") or item.get("Path") or item.get("FileName")
-                if not file_name:
-                    continue
-                file_path = subdir / file_name
-                driver_name = item.get("Name", "Legacy Driver")
-                category = item.get("Category")
-                available_ver = item.get("Version")
-                status_result, installed_ver = get_driver_status(driver_name, category, available_ver, installed_cache)
-                if "bios" in category.lower() and status_result == "Update Available":
-                    status_result = "Critical"
-                sub_records.append(
-                    DriverRecord(
-                        name=driver_name,
-                        status=status_result,
-                        source="Legacy",
-                        installed_version=installed_ver,
-                        latest_version=available_ver,
-                        category=category,
-                        softpaq_id=item.get("SoftPaqId"),
-                        download_url=str(file_path),
-                        output_path=file_path,
-                    )
-                )
-            if not sub_records:
-                continue
-            score = self._score_candidate(subdir.name, platform_id, model)
-            matches.append((score, subdir, sub_records))
-
-        if not matches:
-            return []
-        matches.sort(key=lambda item: (item[0], item[1].name.lower()), reverse=True)
-        best_score, best_dir, best_records = matches[0]
-        if len(matches) > 1 and matches[1][0] == best_score:
-            self.last_match_detail = (
-                "Multiple legacy manifest folders matched equally; "
-                f"using '{best_dir.name}'. Consider creating a platform ID folder."
-            )
-        else:
-            self.last_match_detail = f"Legacy repo fallback selected '{best_dir.name}'."
-        return best_records
-
-
 class DriverService:
     def __init__(
         self,
         *,
         working_dir: Path | str | None = None,
-        legacy_repo_root: str | Path | None = None,
         hpia_client: HPIAClient | None = None,
         cmsl_client: CMSLClient | None = None,
-        legacy_repo: LegacyRepository | None = None,
         command_runner: CommandRunner | None = None,
         system_info_provider: Callable[[], HPSystemInfo] | None = None,
     ) -> None:
@@ -887,7 +719,6 @@ class DriverService:
         self._runner = command_runner or SubprocessRunner()
         self._hpia = hpia_client or HPIAClient(self._working_dir)
         self._cmsl = cmsl_client or CMSLClient()
-        self._legacy = legacy_repo or LegacyRepository(legacy_repo_root)
         self._system_info_provider = system_info_provider or get_hp_system_info
         self.last_scan_warnings: list[str] = []
         self.last_system_info: HPSystemInfo | None = None
@@ -926,8 +757,6 @@ class DriverService:
                     self.last_scan_warnings.append(f"CMSL scan failed: {exc}")
             else:
                 self.last_scan_warnings.append("CMSL not available. Install the HPCMSL PowerShell module.")
-        if not records and info.supports_legacy_repo:
-            records.extend(self._legacy.list_packages(info.platform_id, info.model))
         return records
 
     def scan_hpia(self) -> list[DriverRecord]:
@@ -976,23 +805,6 @@ class DriverService:
         deduped = _dedupe_latest_records(records)
         return sorted(deduped, key=lambda r: (r.category or "", r.name))
 
-    def scan_legacy(self) -> list[DriverRecord]:
-        info = self._system_info_provider()
-        self.last_system_info = info
-        self.last_scan_warnings = []
-        if not self._legacy.is_configured():
-            self.last_scan_warnings.append("Legacy repository root not configured. Set it in Drivers -> Legacy -> Settings.")
-            return []
-        if not info.supports_legacy_repo:
-            self.last_scan_warnings.append("Legacy repository not supported on this system.")
-            return []
-        records = self._legacy.list_packages(info.platform_id, info.model)
-        if self._legacy.last_match_detail:
-            self.last_scan_warnings.append(self._legacy.last_match_detail)
-        if not records:
-            self.last_scan_warnings.append("No legacy repository manifest found for this device.")
-        return records
-
     def download(
         self,
         records: Iterable[DriverRecord],
@@ -1012,7 +824,6 @@ class DriverService:
 
         hpia_targets = [r for r in record_list if r.source == "HPIA" and r.softpaq_id]
         cmsl_targets = [r for r in record_list if r.source == "CMSL" and r.softpaq_id]
-        legacy_targets = [r for r in record_list if r.source == "Legacy" and r.download_url]
 
         if hpia_targets:
             try:
@@ -1035,20 +846,6 @@ class DriverService:
                 record.output_path = self._cmsl.download(record.softpaq_id or "", dest)
                 ops.append(DriverOperationResult(record, "download", True, "Downloaded"))
                 _emit(f"Downloaded: {record.name}")
-            except Exception as exc:
-                ops.append(DriverOperationResult(record, "download", False, str(exc)))
-                _emit(f"Failed: {record.name}")
-
-        for record in legacy_targets:
-            try:
-                src = Path(record.download_url or "")
-                dest_dir = self._working_dir / "legacy_drivers"
-                dest_dir.mkdir(parents=True, exist_ok=True)
-                dest = dest_dir / src.name
-                shutil.copy2(src, dest)
-                record.output_path = dest  # type: ignore[assignment]
-                ops.append(DriverOperationResult(record, "download", True, "Copied"))
-                _emit(f"Copied: {record.name}")
             except Exception as exc:
                 ops.append(DriverOperationResult(record, "download", False, str(exc)))
                 _emit(f"Failed: {record.name}")

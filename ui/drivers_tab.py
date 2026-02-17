@@ -1,11 +1,7 @@
 """Drivers tab UI for scanning/downloading/installing HP drivers."""
 from __future__ import annotations
 
-import os
-import re
-import subprocess
 from pathlib import Path
-from pathlib import PureWindowsPath
 from typing import Callable, Iterable, List
 
 from PySide6.QtCore import Qt, QThreadPool
@@ -27,10 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from allinone_it_config.paths import get_application_directory
-from allinone_it_config.user_settings import SettingsStore, UserSettings
 from services.drivers import DriverOperationResult, DriverRecord, DriverService
-from ui.driver_settings_dialog import DriverSettingsDialog
-from ui.legacy_credentials_dialog import LegacyCredentialsDialog
 from ui.workers import ServiceWorker
 
 LogCallback = Callable[[str], None]
@@ -43,18 +36,14 @@ class DriversTab(QWidget):
         thread_pool: QThreadPool,
         *,
         working_dir: Path | None = None,
-        settings: UserSettings | None = None,
-        settings_store: SettingsStore | None = None,
     ) -> None:
         super().__init__()
         self._log = log_callback
         self._thread_pool = thread_pool
         self._working_dir = working_dir or get_application_directory()
-        self._settings_store = settings_store or SettingsStore()
-        self._settings = settings or self._settings_store.load()
         self._refresh_service()
-        self._records_by_source: dict[str, list[DriverRecord]] = {"HPIA": [], "CMSL": [], "LEGACY": []}
-        self._view_by_source: dict[str, list[DriverRecord]] = {"HPIA": [], "CMSL": [], "LEGACY": []}
+        self._records_by_source: dict[str, list[DriverRecord]] = {"HPIA": [], "CMSL": []}
+        self._view_by_source: dict[str, list[DriverRecord]] = {"HPIA": [], "CMSL": []}
         self._workers: set[ServiceWorker] = set()
         self._busy = False
         self._last_action: tuple[str, str] | None = None
@@ -66,13 +55,7 @@ class DriversTab(QWidget):
         worker.signals.error.connect(lambda *_: self._workers.discard(worker))
 
     def _refresh_service(self) -> None:
-        legacy_root = self._settings.hp_legacy_repo_root.strip()
-        if legacy_root:
-            legacy_root = self._normalize_unc_path(legacy_root)
-        self._service = DriverService(
-            working_dir=self._working_dir,
-            legacy_repo_root=legacy_root or None,
-        )
+        self._service = DriverService(working_dir=self._working_dir)
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -80,17 +63,14 @@ class DriversTab(QWidget):
         self._panels: dict[str, dict[str, QWidget]] = {}
         self._panels["HPIA"] = self._create_panel("HPIA")
         self._panels["CMSL"] = self._create_panel("CMSL", show_filter=True)
-        self._panels["LEGACY"] = self._create_panel("Legacy", show_settings=True)
         self._tabs.addTab(self._panels["HPIA"]["widget"], "HPIA")
         self._tabs.addTab(self._panels["CMSL"]["widget"], "CMSL")
-        self._tabs.addTab(self._panels["LEGACY"]["widget"], "Legacy")
         layout.addWidget(self._tabs)
 
     def _create_panel(
         self,
         source: str,
         *,
-        show_settings: bool = False,
         show_filter: bool = False,
     ) -> dict[str, QWidget]:
         panel = QWidget()
@@ -107,12 +87,6 @@ class DriversTab(QWidget):
         button_row.addWidget(btn_scan)
         button_row.addWidget(btn_download)
         button_row.addWidget(btn_install)
-        if show_settings:
-            btn_settings = QPushButton("Settings")
-            button_row.addWidget(btn_settings)
-            btn_settings.clicked.connect(self._open_driver_settings)
-        else:
-            btn_settings = None
         if show_filter:
             filter_label = QLabel("Category")
             filter_combo = QComboBox()
@@ -170,7 +144,6 @@ class DriversTab(QWidget):
             "btn_install": btn_install,
             "btn_select_all": btn_select_all,
             "btn_select_none": btn_select_none,
-            "btn_settings": btn_settings,
             "category_filter": filter_combo,
             "progress_label": progress_label,
             "progress_bar": progress_bar,
@@ -179,17 +152,15 @@ class DriversTab(QWidget):
     def _start_scan(self, source: str) -> None:
         if self._busy:
             return
+        if source not in {"HPIA", "CMSL"}:
+            self._log(f"[WARN] Unsupported driver source: {source}")
+            return
         self._refresh_service()
+        action = self._service.scan_hpia if source == "HPIA" else self._service.scan_cmsl_catalog
         self._busy = True
         self._last_action = ("scan", source)
         self._set_buttons_enabled(False)
         self._log(f"Scanning {source} drivers...")
-        if source == "HPIA":
-            action = self._service.scan_hpia
-        elif source == "CMSL":
-            action = self._service.scan_cmsl_catalog
-        else:
-            action = self._service.scan_legacy
         worker = ServiceWorker(action)
         worker.signals.finished.connect(lambda records, src=source: self._handle_scan_results(src, records))
         worker.signals.error.connect(self._handle_error)
@@ -344,7 +315,7 @@ class DriversTab(QWidget):
 
     def _set_buttons_enabled(self, enabled: bool) -> None:
         for panel in self._panels.values():
-            for key in ("btn_scan", "btn_download", "btn_install", "btn_select_all", "btn_select_none", "btn_settings"):
+            for key in ("btn_scan", "btn_download", "btn_install", "btn_select_all", "btn_select_none"):
                 button = panel.get(key)
                 if isinstance(button, QPushButton):
                     button.setEnabled(enabled)
@@ -354,113 +325,7 @@ class DriversTab(QWidget):
         self._set_buttons_enabled(True)
         if self._last_action:
             self._clear_progress(self._last_action[1])
-        if self._maybe_prompt_legacy_credentials(message):
-            return
         self._log(f"[ERROR] {message}")
-
-    def _maybe_prompt_legacy_credentials(self, message: str) -> bool:
-        if not self._looks_like_legacy_auth_error(message):
-            return False
-        legacy_root = self._settings.hp_legacy_repo_root.strip()
-        if not legacy_root:
-            return False
-        share_path = self._normalize_unc_path(self._extract_unc_path(message) or legacy_root)
-        share_root = self._unc_share_root(share_path) or share_path
-        if not share_root.startswith("\\\\"):
-            return False
-        self._log("[WARN] Legacy repository requires credentials.")
-        dialog = LegacyCredentialsDialog(share_root, self)
-        if not dialog.exec():
-            self._log("[WARN] Legacy repository credentials not provided.")
-            return True
-        username, password = dialog.credentials()
-        if not username or not password:
-            QMessageBox.warning(self, "Missing Credentials", "Enter both a username and password.")
-            return True
-        success, detail = self._connect_to_share(share_root, username, password)
-        if not success:
-            QMessageBox.critical(self, "Legacy Repo Authentication Failed", detail)
-            self._log(f"[ERROR] Legacy repo authentication failed: {detail}")
-            return True
-        if self._last_action == ("scan", "Legacy"):
-            self._log("Legacy repo credentials accepted. Retrying scan...")
-            self._start_scan("Legacy")
-        else:
-            self._log("Legacy repo credentials accepted. Retry the legacy operation.")
-        return True
-
-    def _looks_like_legacy_auth_error(self, message: str) -> bool:
-        lowered = message.lower()
-        patterns = (
-            "winerror 1326",
-            "user name or password is incorrect",
-            "logon failure",
-            "winerror 67",
-            "system error 67",
-            "network name cannot be found",
-        )
-        return any(pattern in lowered for pattern in patterns)
-
-    def _extract_unc_path(self, message: str) -> str | None:
-        quoted = re.search(r"'(\\\\[^']+)'", message)
-        if quoted:
-            return quoted.group(1)
-        raw = re.search(r"(\\\\[^\\r\\n]+)", message)
-        if raw:
-            return raw.group(1)
-        return None
-
-    def _normalize_unc_path(self, path: str) -> str:
-        cleaned = path.strip()
-        if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in ('"', "'"):
-            cleaned = cleaned[1:-1].strip()
-        if cleaned.startswith("//"):
-            cleaned = "\\\\" + cleaned.lstrip("/")
-        cleaned = cleaned.replace("/", "\\")
-        return cleaned
-
-    def _unc_server(self, path: str) -> str | None:
-        normalized = self._normalize_unc_path(path)
-        if not normalized.startswith("\\\\"):
-            return None
-        parts = normalized.lstrip("\\").split("\\", 1)
-        if not parts or not parts[0]:
-            return None
-        return parts[0]
-
-    def _unc_share_root(self, path: str) -> str | None:
-        normalized = self._normalize_unc_path(path)
-        if not normalized.startswith("\\\\"):
-            return None
-        parts = PureWindowsPath(normalized).parts
-        if not parts:
-            return None
-        return parts[0].rstrip("\\")
-
-    def _connect_to_share(self, share: str, username: str, password: str) -> tuple[bool, str]:
-        if os.name != "nt":
-            return (False, "Network credentials can only be applied on Windows.")
-        normalized = self._normalize_unc_path(share).rstrip("\\")
-        share_root = self._unc_share_root(normalized) or normalized
-        server = self._unc_server(normalized)
-        targets = [share_root]
-        if normalized != share_root:
-            targets.append(normalized)
-        if server:
-            targets.append(f"\\\\{server}\\IPC$")
-        seen: set[str] = set()
-        last_detail = "Unknown error"
-        for target in targets:
-            if target in seen:
-                continue
-            seen.add(target)
-            self._log(f"[REPO] net use {target}")
-            cmd = ["net", "use", target, password, f"/user:{username}", "/persistent:no"]
-            result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-            if result.returncode == 0:
-                return (True, "Connected")
-            last_detail = (result.stderr or result.stdout or "Unknown error").strip()
-        return (False, last_detail)
 
     def _set_badge_cell(self, table: QTableWidget, row: int, column: int, text: str, palette: tuple[str, str, str]) -> None:
         label = QLabel(text)
@@ -481,7 +346,6 @@ class DriversTab(QWidget):
         palette = {
             "HPIA": ("#dbeafe", "#1e3a8a", "#3b82f6"),
             "CMSL": ("#ccfbf1", "#0f766e", "#14b8a6"),
-            "LEGACY": ("#e5e7eb", "#374151", "#6b7280"),
         }
         return palette.get(source.upper(), ("#e5e7eb", "#4b5563", "#9ca3af"))
 
@@ -494,7 +358,6 @@ class DriversTab(QWidget):
             "up to date": ("#dcfce7", "#14532d", "#22c55e"),
             "installed": ("#dcfce7", "#14532d", "#22c55e"),
             "not installed": ("#e5e7eb", "#4b5563", "#9ca3af"),
-            "legacy": ("#e5e7eb", "#374151", "#9ca3af"),
             "catalog": ("#e0f2fe", "#075985", "#38bdf8"),
             "unknown": ("#e5e7eb", "#4b5563", "#9ca3af"),
         }
@@ -554,9 +417,3 @@ class DriversTab(QWidget):
         key = source.upper()
         table = self._panels[key]["table"]
         return table  # type: ignore[return-value]
-
-    def _open_driver_settings(self) -> None:
-        dialog = DriverSettingsDialog(self._settings, self._settings_store, self)
-        if dialog.exec():
-            self._refresh_service()
-            self._log("Driver settings saved.")

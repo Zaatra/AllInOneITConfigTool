@@ -3,7 +3,7 @@
 This repository contains the PySide6-based rewrite of the original `AllInOneITConfigTool.ps1` utility. It maintains the immutable deployment values (timezone, locale, WinGet IDs, Office XML templates) and exposes the same workflows across three tabs:
 
 1. **Applications** – Download/install software via WinGet, Office ODT, direct installers, or local archives.
-2. **Drivers** – Scan HP systems with HPIA/CMSL or fall back to the legacy repo, then download/install SoftPaqs in batch.
+2. **Drivers** – Scan HP systems with HPIA/CMSL, then download/install SoftPaqs in batch.
 3. **System Config** – Validate and apply the mandated timezone, locale, power plan, and registry tweaks.
 
 ## Running Locally
@@ -61,15 +61,12 @@ service = DriverService(
         model='HP Mock',
         supports_hpia=False,
         supports_cmsl=False,
-        supports_legacy_repo=True,
     )
 )
 for record in service.scan():
     print(record)
 PY
 ```
-
-Place a sample `manifest.json` + dummy installers beneath the path referenced by `GLOBAL_IDS.hp_legacy_repo_root` to emulate legacy results. The GUI will display the mocked entries once the service returns them.
 
 ### 4. System Config Remediation
 

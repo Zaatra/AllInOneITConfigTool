@@ -23,10 +23,6 @@ def test_crowdstrike_args_empty_by_default() -> None:
     assert target.args == ""
 
 
-def test_hp_legacy_repo_path() -> None:
-    assert IMMUTABLE_CONFIG.ids.hp_legacy_repo_root == ""
-
-
 def test_winget_ids_preserved() -> None:
     registry = build_registry(UserSettings())
     chrome = next(app for app in registry.entries if app.name == "Chrome")
