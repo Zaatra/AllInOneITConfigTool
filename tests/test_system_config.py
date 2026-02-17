@@ -3,7 +3,10 @@ from __future__ import annotations
 import subprocess
 from typing import Sequence
 
+from allinone_it_config.constants import IMMUTABLE_CONFIG
 from services.system_config import (
+    ARABIC_SPELLING_REG_PATH,
+    ARABIC_SPELLING_RULES,
     DEFAULT_APPS_POLICY_PATH,
     DEFAULT_APPS_POLICY_VALUE,
     DEFAULT_USER_HIVE_KEY,
@@ -11,11 +14,11 @@ from services.system_config import (
     DESKTOP_ICON_VISIBILITY_PATHS,
     DESKTOP_POLICY_PATH,
     DESKTOP_POLICY_VALUE,
+    TARGET_HOME_GEO_ID,
     ConfigCheckResult,
     RegistryAccessor,
     SystemConfigService,
 )
-from allinone_it_config.constants import IMMUTABLE_CONFIG
 
 
 class FakeRunner:
@@ -40,10 +43,9 @@ class FakeRegistry(RegistryAccessor):
         self.values[(path, value_name)] = value
 
 
-def test_check_reports_desired_state() -> None:
+def _desired_state_runner() -> FakeRunner:
     config = IMMUTABLE_CONFIG.system
-    default_root = fr"HKU:\{DEFAULT_USER_HIVE_KEY}"
-    runner = FakeRunner(
+    return FakeRunner(
         {
             ("tzutil", "/g"): f"{config.timezone}\n",
             ("powercfg", "/getactivescheme"): "Power Scheme GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c  (High performance)",
@@ -57,10 +59,33 @@ def test_check_reports_desired_state() -> None:
                 "powershell",
                 "-NoProfile",
                 "-Command",
+                "(Get-Culture).Name",
+            ): f"{config.locale.ui_languages[0]}\n",
+            (
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "(Get-WinHomeLocation).GeoId",
+            ): f"{TARGET_HOME_GEO_ID}\n",
+            (
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "(Get-WinUserLanguageList).LanguageTag",
+            ): "en-US\nar-SA\n",
+            (
+                "powershell",
+                "-NoProfile",
+                "-Command",
                 "(Get-WinUILanguageOverride).Name",
             ): f"{config.locale.ui_languages[0]}\n",
         }
     )
+
+
+def _desired_state_registry() -> FakeRegistry:
+    config = IMMUTABLE_CONFIG.system
+    default_root = fr"HKU:\{DEFAULT_USER_HIVE_KEY}"
     initial_registry: dict[tuple[str, str], str | int] = {
         (config.fast_boot.path, config.fast_boot.value_name): int(config.fast_boot.desired_value),
         (config.desktop_icons.path, config.desktop_icons.value_name): int(config.desktop_icons.desired_value),
@@ -76,13 +101,20 @@ def test_check_reports_desired_state() -> None:
         ): 0,
         (fr"{default_root}\Control Panel\International", "sShortDate"): config.locale.short_date_format,
     }
+    for value_name, expected in ARABIC_SPELLING_RULES.items():
+        initial_registry[(ARABIC_SPELLING_REG_PATH, value_name)] = expected
     for icon_path in DESKTOP_ICON_VISIBILITY_PATHS:
         suffix = icon_path.split("HKCU:\\", 1)[1]
         mapped = fr"{default_root}\{suffix}"
         for guid in DESKTOP_ICON_GUIDS:
             initial_registry[(mapped, guid)] = 0
-    registry = FakeRegistry(initial_registry)
-    service = SystemConfigService(config, command_runner=runner, registry=registry)
+    return FakeRegistry(initial_registry)
+
+
+def test_check_reports_desired_state() -> None:
+    runner = _desired_state_runner()
+    registry = _desired_state_registry()
+    service = SystemConfigService(IMMUTABLE_CONFIG.system, command_runner=runner, registry=registry)
     registry.set_value(
         DEFAULT_APPS_POLICY_PATH,
         DEFAULT_APPS_POLICY_VALUE,
@@ -120,6 +152,8 @@ def test_apply_runs_commands_and_sets_registry() -> None:
     assert registry.get_value(r"HKCU:\Control Panel\International", "sShortDate") == config.locale.short_date_format
     assert registry.get_value(r"HKCU:\Control Panel\International", "iDate") == "1"
     assert registry.get_value(r"HKCU:\Control Panel\International", "sDate") == "/"
+    for value_name, expected in ARABIC_SPELLING_RULES.items():
+        assert registry.get_value(ARABIC_SPELLING_REG_PATH, value_name) == expected
     assert (
         registry.get_value(
             fr"HKU:\{DEFAULT_USER_HIVE_KEY}\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced",
@@ -146,3 +180,31 @@ def test_apply_runs_commands_and_sets_registry() -> None:
             assert registry.get_value(mapped_current, guid) == 0
             assert registry.get_value(mapped_default, guid) == 0
     assert registry.get_value(DEFAULT_APPS_POLICY_PATH, DEFAULT_APPS_POLICY_VALUE) == str(service._default_apps_xml_path())
+
+
+def test_apply_selected_only_runs_requested_steps() -> None:
+    config = IMMUTABLE_CONFIG.system
+    runner = FakeRunner({("tzutil", "/g"): config.timezone})
+    registry = FakeRegistry()
+    service = SystemConfigService(config, command_runner=runner, registry=registry)
+
+    results = service.apply_with_results(["Timezone", "Fast Boot"])
+
+    assert [result.name for result in results] == ["Timezone", "Fast Boot"]
+    assert ("tzutil", "/s", config.timezone) in runner.commands
+    assert any(cmd[0] == "tzutil" and cmd[1] == "/g" for cmd in runner.commands)
+    assert not any(cmd[0] == "powercfg" and "/setactive" in cmd for cmd in runner.commands)
+    assert not any(cmd[0] == "dism" for cmd in runner.commands)
+    assert registry.get_value(config.fast_boot.path, config.fast_boot.value_name) == int(config.fast_boot.desired_value)
+
+
+def test_diagnostics_include_time_and_locale_checks() -> None:
+    runner = _desired_state_runner()
+    registry = _desired_state_registry()
+    service = SystemConfigService(IMMUTABLE_CONFIG.system, command_runner=runner, registry=registry)
+
+    results = service.diagnostics()
+
+    assert any(result.name == "Locale" for result in results)
+    assert any(result.name == "Diagnostic Timezone" for result in results)
+    assert any(result.name == "Diagnostic Arabic Spelling" for result in results)

@@ -32,6 +32,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self._settings = settings
         self._store = store
+        self._path_warning_keys: set[str] = set()
         self.setWindowTitle("Installer Settings")
         self.setMinimumWidth(560)
         self._build_ui()
@@ -366,7 +367,7 @@ class SettingsDialog(QDialog):
         teamviewer_settings_file = self._clean_path_value(self._teamviewer_settings_file.text())
         if not teamviewer_msi_path:
             missing.append("TeamViewer MSI path")
-        elif not Path(teamviewer_msi_path).is_file():
+        elif not self._path_is_file(Path(teamviewer_msi_path)):
             missing.append("TeamViewer MSI file not found")
         if not teamviewer_customconfig:
             missing.append("TeamViewer CUSTOMCONFIGID")
@@ -376,7 +377,7 @@ class SettingsDialog(QDialog):
             missing.append("TeamViewer SETTINGSFILE")
         elif not teamviewer_settings_file.lower().endswith(".tvopt"):
             missing.append("TeamViewer SETTINGSFILE must end with .tvopt")
-        elif not Path(teamviewer_settings_file).is_file():
+        elif not self._path_is_file(Path(teamviewer_settings_file)):
             missing.append("TeamViewer SETTINGSFILE not found")
         return missing
 
@@ -437,14 +438,52 @@ class SettingsDialog(QDialog):
         path = Path(cleaned)
         if suffixes and path.suffix.lower() not in suffixes:
             return False
-        return path.exists() and path.is_file()
+        return self._path_is_file(path)
 
     def _is_dir_valid(self, value: str, *, allow_empty: bool = False) -> bool:
         cleaned = self._clean_path_value(value)
         if not cleaned:
             return allow_empty
         path = Path(cleaned)
-        return path.exists() and path.is_dir()
+        return self._path_is_dir(path)
+
+    def _path_is_file(self, path: Path) -> bool:
+        try:
+            return path.exists() and path.is_file()
+        except OSError as exc:
+            self._warn_inaccessible_path(path, exc, expected="file")
+            return False
+
+    def _path_is_dir(self, path: Path) -> bool:
+        try:
+            return path.exists() and path.is_dir()
+        except OSError as exc:
+            self._warn_inaccessible_path(path, exc, expected="folder")
+            return False
+
+    def _warn_inaccessible_path(self, path: Path, exc: OSError, *, expected: str) -> None:
+        normalized = str(path)
+        winerror = getattr(exc, "winerror", None)
+        key = f"{expected}|{normalized}|{winerror}"
+        if key in self._path_warning_keys:
+            return
+        self._path_warning_keys.add(key)
+        if winerror == 1326:
+            detail = (
+                "Windows could not authenticate to this network path "
+                "(WinError 1326: user name or password is incorrect)."
+            )
+        else:
+            detail = str(exc)
+        QMessageBox.warning(
+            self,
+            "Path Access Error",
+            (
+                f"Cannot access this {expected} path:\n{normalized}\n\n"
+                f"{detail}\n\n"
+                "The field will stay invalid until the path is accessible."
+            ),
+        )
 
     def _is_url_valid(self, value: str, *, allow_empty: bool = False) -> bool:
         cleaned = value.strip()
@@ -481,7 +520,7 @@ class SettingsDialog(QDialog):
             return False
         if not settings_file.lower().endswith(".tvopt"):
             return False
-        return Path(settings_file).is_file()
+        return self._path_is_file(Path(settings_file))
 
     def _list_java_versions(self) -> None:
         exe = shutil.which("winget")

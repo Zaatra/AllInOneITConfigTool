@@ -57,9 +57,31 @@ DEFAULT_APP_ASSOCIATIONS = (
     ("mailto", "Outlook.URL.mailto.15", "Outlook (classic)"),
 )
 LANGUAGE_CAPABILITY_PREFIXES = {
-    "en-US": ("Language.Basic", "Language.Handwriting", "Language.TextToSpeech", "Language.Speech"),
-    "ar-SA": ("Language.Basic", "Language.Handwriting", "Language.TextToSpeech", "Language.Speech"),
+    "en-US": (
+        "Language.Basic",
+        "Language.Handwriting",
+        "Language.OCR",
+        "Language.TextToSpeech",
+        "Language.Speech",
+    ),
+    "ar-SA": ("Language.Basic", "Language.Handwriting", "Language.OCR", "Language.TextToSpeech"),
 }
+TARGET_HOME_GEO_ID = 244
+ARABIC_SPELLING_REG_PATH = r"HKCU:\Software\Microsoft\Spelling\Options\ar-SA"
+ARABIC_SPELLING_RULES = {
+    "StrictFinalYaa": 1,
+    "StrictInitialAlefHamza": 0,
+    "StrictTaaMarboota": 1,
+}
+SYSTEM_CONFIG_STEP_ORDER = (
+    "Timezone",
+    "Power Plan",
+    "Fast Boot",
+    "Desktop Icons",
+    "Locale",
+    "Default User Profile",
+    "Default Apps",
+)
 
 T = TypeVar("T")
 
@@ -74,6 +96,13 @@ class ConfigCheckResult:
 
 @dataclass
 class ApplyStepResult:
+    name: str
+    success: bool
+    detail: str = ""
+
+
+@dataclass
+class DiagnosticStepResult:
     name: str
     success: bool
     detail: str = ""
@@ -167,16 +196,34 @@ class SystemConfigService:
     def apply(self) -> None:
         self.apply_with_results()
 
-    def apply_with_results(self) -> list[ApplyStepResult]:
-        results = [
-            self._apply_timezone(),
-            self._apply_power_plan(),
-            self._apply_fast_boot(),
-            self._apply_locale(),
-            self._apply_user_profile_settings(),
-            self._apply_default_apps(),
-        ]
-        return results
+    def available_apply_steps(self) -> tuple[str, ...]:
+        return SYSTEM_CONFIG_STEP_ORDER
+
+    def apply_with_results(self, selected_steps: Iterable[str] | None = None) -> list[ApplyStepResult]:
+        step_map: dict[str, Callable[[], ApplyStepResult]] = {
+            "Timezone": self._apply_timezone,
+            "Power Plan": self._apply_power_plan,
+            "Fast Boot": self._apply_fast_boot,
+            "Desktop Icons": self._apply_desktop_icons,
+            "Locale": self._apply_locale,
+            "Default User Profile": self._apply_user_profile_settings,
+            "Default Apps": self._apply_default_apps,
+        }
+        requested = set(step_map) if selected_steps is None else {name for name in selected_steps if name in step_map}
+        return [step_map[name]() for name in SYSTEM_CONFIG_STEP_ORDER if name in requested]
+
+    def diagnostics(self) -> list[DiagnosticStepResult]:
+        diagnostics: list[DiagnosticStepResult] = []
+        for result in self.check():
+            diagnostics.append(
+                DiagnosticStepResult(
+                    name=result.name,
+                    success=result.in_desired_state,
+                    detail=f"expected={result.expected}; actual={result.actual}",
+                )
+            )
+        diagnostics.extend(self._diagnose_time_and_locale_state())
+        return diagnostics
 
     def _apply_timezone(self) -> ApplyStepResult:
         expected = self._config.timezone
@@ -234,6 +281,21 @@ class SystemConfigService:
         except Exception as exc:  # pragma: no cover - surfaced via UI logging
             return ApplyStepResult("Fast Boot", False, str(exc))
 
+    def _apply_desktop_icons(self) -> ApplyStepResult:
+        try:
+            desired = int(self._config.desktop_icons.desired_value)
+            self._registry.set_value(self._config.desktop_icons.path, self._config.desktop_icons.value_name, desired)
+            self._registry.set_value(DESKTOP_POLICY_PATH, DESKTOP_POLICY_VALUE, 0)
+            self._set_desktop_icon_registry_values(lambda value: value)
+        except Exception as exc:  # pragma: no cover - surfaced via UI logging
+            return ApplyStepResult("Desktop Icons", False, str(exc))
+        result = self._check_desktop_icons()
+        refresh = self._refresh_desktop_shell()
+        detail = result.actual
+        if refresh:
+            detail = f"{detail}; explorer refresh: {refresh}"
+        return ApplyStepResult("Desktop Icons", result.in_desired_state, detail)
+
     def _apply_locale(self) -> ApplyStepResult:
         detail_parts: list[str] = []
         command = f"Set-WinSystemLocale -SystemLocale {shlex.quote(self._config.locale.system_locale)}"
@@ -246,13 +308,16 @@ class SystemConfigService:
         if feature_detail:
             detail_parts.append(feature_detail)
 
-        ui_detail = self._apply_ui_languages()
+        ui_success, ui_detail = self._apply_ui_languages()
+        success = success and ui_success
         if ui_detail:
             detail_parts.append(f"ui languages: {ui_detail}")
 
         primary_language = self._primary_ui_language()
+        target_languages = self._target_language_order()
         culture_script = "; ".join(
             [
+                f"Set-WinHomeLocation -GeoId {TARGET_HOME_GEO_ID}",
                 f"Set-WinUILanguageOverride -Language {shlex.quote(primary_language)}",
                 f"Set-Culture -CultureInfo {shlex.quote(primary_language)}",
                 "Set-ItemProperty -Path 'HKCU:\\Control Panel\\International' -Name 'iDate' -Value '1'",
@@ -277,12 +342,34 @@ class SystemConfigService:
             date_error = str(exc)
             detail_parts.append(f"date: {date_error}")
 
+        spelling_error = self._apply_arabic_spelling_rules()
+        if spelling_error:
+            detail_parts.append(f"spelling: {spelling_error}")
+            success = False
+
         speech_detail = self._apply_speech_preferences()
         if speech_detail:
             detail_parts.append(speech_detail)
             success = False
 
         actual_locale = self._wait_for_system_locale(self._config.locale.system_locale)
+        current_culture = self._run_and_capture(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "(Get-Culture).Name",
+            ]
+        )
+        current_geo = self._run_and_capture(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "(Get-WinHomeLocation).GeoId",
+            ]
+        )
+        current_lang_list = self._current_language_order()
         date_val = self._registry.get_value(r"HKCU:\Control Panel\International", "sShortDate") or ""
         display_language = self._run_and_capture(
             [
@@ -292,17 +379,32 @@ class SystemConfigService:
                 "(Get-WinUILanguageOverride).Name",
             ]
         )
-        current_parts = [actual_locale, str(date_val)]
+        spelling_ok, spelling_actual = self._read_arabic_spelling_state()
+        current_parts = [
+            f"locale={actual_locale}",
+            f"culture={current_culture}",
+            f"date={date_val}",
+            f"geo={current_geo}",
+            f"langs={','.join(current_lang_list)}",
+            f"spelling={spelling_actual}",
+        ]
         if display_language:
             current_parts.append(f"display={display_language}")
         detail_parts.append(f"current: {' / '.join(part for part in current_parts if part)}")
 
         if actual_locale:
             success = success and actual_locale.lower() == self._config.locale.system_locale.lower()
+        if current_culture:
+            success = success and current_culture.lower() == primary_language.lower()
         if date_val:
             success = success and str(date_val).lower() == self._config.locale.short_date_format.lower()
+        if current_geo:
+            success = success and str(current_geo).strip() == str(TARGET_HOME_GEO_ID)
+        if current_lang_list:
+            success = success and tuple(current_lang_list) == target_languages
         if display_language:
             success = success and display_language.lower() == primary_language.lower()
+        success = success and spelling_ok
         if date_error:
             success = False
         return ApplyStepResult("Locale", success, "; ".join(part for part in detail_parts if part))
@@ -367,8 +469,12 @@ class SystemConfigService:
         return ConfigCheckResult("Desktop Icons", f"HideIcons={expected_value}, NoDesktop=0", actual_str, ok)
 
     def _check_locale(self) -> ConfigCheckResult:
-        expected = self._config.locale.system_locale
-        actual = self._run_and_capture(
+        expected_locale = self._config.locale.system_locale
+        expected_display = self._primary_ui_language()
+        expected_languages = self._target_language_order()
+        expected_spelling = ", ".join(f"{name}={value}" for name, value in ARABIC_SPELLING_RULES.items())
+
+        actual_locale = self._run_and_capture(
             [
                 "powershell",
                 "-NoProfile",
@@ -376,6 +482,23 @@ class SystemConfigService:
                 "Get-WinSystemLocale | Select-Object -ExpandProperty Name",
             ]
         )
+        actual_culture = self._run_and_capture(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "(Get-Culture).Name",
+            ]
+        )
+        actual_geo = self._run_and_capture(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "(Get-WinHomeLocation).GeoId",
+            ]
+        )
+        current_lang_list = self._current_language_order()
         date_val = self._registry.get_value(r"HKCU:\Control Panel\International", "sShortDate") or ""
         display_language = self._run_and_capture(
             [
@@ -385,16 +508,37 @@ class SystemConfigService:
                 "(Get-WinUILanguageOverride).Name",
             ]
         )
-        actual_display = f"{actual} / {date_val}" if date_val else actual
-        if display_language:
-            actual_display = f"{actual_display} / display={display_language}"
-        ok = expected.lower() == actual.lower()
-        if date_val:
-            ok = ok and str(date_val).lower() == self._config.locale.short_date_format.lower()
-        if display_language:
-            ok = ok and display_language.lower() == self._primary_ui_language().lower()
-        expected_display = f"{expected} / {self._config.locale.short_date_format} / display={self._primary_ui_language()}"
-        return ConfigCheckResult("Locale", expected_display, actual_display, ok)
+        spelling_ok, spelling_actual = self._read_arabic_spelling_state()
+        actual_display = ", ".join(
+            [
+                f"locale={actual_locale}",
+                f"culture={actual_culture}",
+                f"date={date_val}",
+                f"geo={actual_geo}",
+                f"langs={','.join(current_lang_list)}",
+                f"display={display_language}",
+                f"spelling=[{spelling_actual}]",
+            ]
+        )
+        expected = ", ".join(
+            [
+                f"locale={expected_locale}",
+                f"culture={expected_display}",
+                f"date={self._config.locale.short_date_format}",
+                f"geo={TARGET_HOME_GEO_ID}",
+                f"langs={','.join(expected_languages)}",
+                f"display={expected_display}",
+                f"spelling=[{expected_spelling}]",
+            ]
+        )
+        ok = expected_locale.lower() == actual_locale.lower()
+        ok = ok and expected_display.lower() == actual_culture.lower()
+        ok = ok and str(actual_geo).strip() == str(TARGET_HOME_GEO_ID)
+        ok = ok and tuple(current_lang_list) == expected_languages
+        ok = ok and str(date_val).lower() == self._config.locale.short_date_format.lower()
+        ok = ok and display_language.lower() == expected_display.lower()
+        ok = ok and spelling_ok
+        return ConfigCheckResult("Locale", expected, actual_display, ok)
 
     def _check_default_user_profile(self) -> ConfigCheckResult:
         expected_hide = int(self._config.desktop_icons.desired_value)
@@ -443,8 +587,8 @@ class SystemConfigService:
     def _apply_user_profile_settings_inner(self) -> None:
         desired = int(self._config.desktop_icons.desired_value)
 
-        def apply_to_root(root: str | None) -> None:
-            map_path = (lambda value: value) if root is None else (lambda value: self._map_user_path(value, root))
+        def apply_to_root(root: str) -> None:
+            map_path = lambda value: self._map_user_path(value, root)
             self._registry.set_value(
                 map_path(self._config.desktop_icons.path),
                 self._config.desktop_icons.value_name,
@@ -460,7 +604,6 @@ class SystemConfigService:
             self._registry.set_value(map_path(r"HKCU:\Control Panel\International"), "iDate", "1")
             self._set_desktop_icon_registry_values(map_path)
 
-        apply_to_root(None)
         self._with_default_user_hive(lambda root: apply_to_root(root))
 
     def _apply_default_apps(self) -> ApplyStepResult:
@@ -564,10 +707,10 @@ class SystemConfigService:
             )
         return actual
 
-    def _apply_ui_languages(self) -> str | None:
+    def _apply_ui_languages(self) -> tuple[bool, str | None]:
         languages = tuple(lang for lang in self._config.locale.ui_languages if lang)
         if not languages:
-            return None
+            return True, None
         first, *rest = languages
         parts = [f"$list = New-WinUserLanguageList -Language {_ps_quote(first)}"]
         for lang in rest:
@@ -577,8 +720,8 @@ class SystemConfigService:
         completed = self._runner.run(["powershell", "-NoProfile", "-Command", script])
         detail = self._format_command_detail(completed)
         if completed.returncode != 0 or completed.stdout or completed.stderr:
-            return detail
-        return None
+            return completed.returncode == 0, detail
+        return True, None
 
     def _apply_language_packs_and_features(self) -> tuple[bool, str]:
         languages = tuple(lang for lang in self._config.locale.ui_languages if lang)
@@ -632,6 +775,67 @@ class SystemConfigService:
             return f"speech preferences: {detail}"
         return None
 
+    def _apply_arabic_spelling_rules(self) -> str | None:
+        errors: list[str] = []
+        for value_name, expected in ARABIC_SPELLING_RULES.items():
+            try:
+                self._registry.set_value(ARABIC_SPELLING_REG_PATH, value_name, expected)
+            except Exception as exc:  # pragma: no cover - surfaced via UI logging
+                errors.append(f"{value_name}: {exc}")
+        if errors:
+            return "; ".join(errors)
+        return None
+
+    def _read_arabic_spelling_state(self) -> tuple[bool, str]:
+        states: list[str] = []
+        in_desired_state = True
+        for value_name, expected in ARABIC_SPELLING_RULES.items():
+            actual = self._registry.get_value(ARABIC_SPELLING_REG_PATH, value_name)
+            states.append(f"{value_name}={actual if actual is not None else 'Not Set'}")
+            try:
+                if int(actual) != expected:
+                    in_desired_state = False
+            except (TypeError, ValueError):
+                in_desired_state = False
+        return in_desired_state, ", ".join(states)
+
+    def _diagnose_time_and_locale_state(self) -> list[DiagnosticStepResult]:
+        command_diagnostics = (
+            ("Diagnostic Time", ["powershell", "-NoProfile", "-Command", "Get-Date -Format o"]),
+            ("Diagnostic Timezone", ["tzutil", "/g"]),
+            ("Diagnostic Timezone Detail", ["powershell", "-NoProfile", "-Command", "(Get-TimeZone).Id"]),
+            ("Diagnostic Culture", ["powershell", "-NoProfile", "-Command", "(Get-Culture).Name"]),
+            ("Diagnostic System Locale", ["powershell", "-NoProfile", "-Command", "(Get-WinSystemLocale).Name"]),
+            ("Diagnostic GeoID", ["powershell", "-NoProfile", "-Command", "(Get-WinHomeLocation).GeoId"]),
+            (
+                "Diagnostic Language Order",
+                ["powershell", "-NoProfile", "-Command", "(Get-WinUserLanguageList).LanguageTag"],
+            ),
+            ("Diagnostic UI Language", ["powershell", "-NoProfile", "-Command", "(Get-WinUILanguageOverride).Name"]),
+        )
+        diagnostics: list[DiagnosticStepResult] = []
+        for name, command in command_diagnostics:
+            completed = self._runner.run(command)
+            diagnostics.append(
+                DiagnosticStepResult(name=name, success=completed.returncode == 0, detail=self._format_command_detail(completed))
+            )
+        diagnostics.append(
+            DiagnosticStepResult(
+                name="Diagnostic Short Date",
+                success=True,
+                detail=str(self._registry.get_value(r"HKCU:\Control Panel\International", "sShortDate") or "Not Set"),
+            )
+        )
+        spelling_ok, spelling_actual = self._read_arabic_spelling_state()
+        diagnostics.append(
+            DiagnosticStepResult(
+                name="Diagnostic Arabic Spelling",
+                success=spelling_ok,
+                detail=spelling_actual,
+            )
+        )
+        return diagnostics
+
     def _set_desktop_icon_registry_values(self, map_path: Callable[[str], str]) -> None:
         for icon_path in DESKTOP_ICON_VISIBILITY_PATHS:
             target = map_path(icon_path)
@@ -667,6 +871,23 @@ class SystemConfigService:
         if languages:
             return languages[0]
         return self._config.locale.system_locale
+
+    def _target_language_order(self) -> tuple[str, ...]:
+        languages = tuple(lang for lang in self._config.locale.ui_languages if lang)
+        if languages:
+            return languages
+        return (self._config.locale.system_locale,)
+
+    def _current_language_order(self) -> list[str]:
+        language_list_raw = self._run_and_capture(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "(Get-WinUserLanguageList).LanguageTag",
+            ]
+        )
+        return [line.strip() for line in language_list_raw.splitlines() if line.strip()]
 
     def _default_apps_xml_path(self) -> Path:
         if winreg is None:

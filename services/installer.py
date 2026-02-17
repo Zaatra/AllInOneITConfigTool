@@ -1124,7 +1124,7 @@ def _download_file_with_final_url(
             pass
     with opener.open(request, timeout=60) as response, destination.open("wb") as handle:
         final_url = response.geturl()
-        last_time = time.monotonic()
+        last_time = time.monotonic() - 0.5
         last_bytes = 0
         downloaded = 0
         while True:
@@ -1134,12 +1134,24 @@ def _download_file_with_final_url(
             handle.write(chunk)
             downloaded += len(chunk)
             now = time.monotonic()
-            if status_callback and now - last_time >= 1.0:
+            if now - last_time >= 0.5:
                 delta_bytes = downloaded - last_bytes
-                speed = delta_bytes / max(now - last_time, 0.001)
-                status_callback(_format_speed_label(label or "Downloading", speed))
+                _emit_speed_update(
+                    status_callback,
+                    label or "Downloading",
+                    delta_bytes=delta_bytes,
+                    elapsed=now - last_time,
+                )
                 last_time = now
                 last_bytes = downloaded
+        if downloaded > last_bytes:
+            now = time.monotonic()
+            _emit_speed_update(
+                status_callback,
+                label or "Downloading",
+                delta_bytes=downloaded - last_bytes,
+                elapsed=now - last_time,
+            )
     return final_url
 
 
@@ -1191,7 +1203,7 @@ def _download_file_with_requests(
         timeout=timeout,
     ) as response:
         response.raise_for_status()
-        last_time = time.monotonic()
+        last_time = time.monotonic() - 0.5
         last_bytes = 0
         downloaded = 0
         with destination.open("wb") as handle:
@@ -1201,12 +1213,24 @@ def _download_file_with_requests(
                 handle.write(chunk)
                 downloaded += len(chunk)
                 now = time.monotonic()
-                if status_callback and now - last_time >= 1.0:
+                if now - last_time >= 0.5:
                     delta_bytes = downloaded - last_bytes
-                    speed = delta_bytes / max(now - last_time, 0.001)
-                    status_callback(_format_speed_label(label or "Downloading", speed))
+                    _emit_speed_update(
+                        status_callback,
+                        label or "Downloading",
+                        delta_bytes=delta_bytes,
+                        elapsed=now - last_time,
+                    )
                     last_time = now
                     last_bytes = downloaded
+        if downloaded > last_bytes:
+            now = time.monotonic()
+            _emit_speed_update(
+                status_callback,
+                label or "Downloading",
+                delta_bytes=downloaded - last_bytes,
+                elapsed=now - last_time,
+            )
 
 
 def _file_has_exe_header(path: Path) -> bool:
@@ -1607,9 +1631,12 @@ def _run_office_download(
         size = _directory_payload_size_bytes(payload_root)
         now = time.monotonic()
         delta_bytes = size - last_size
-        speed = delta_bytes / max(now - last_time, 0.001)
-        if status_callback:
-            status_callback(_format_speed_label(label, speed))
+        _emit_speed_update(
+            status_callback,
+            label,
+            delta_bytes=delta_bytes,
+            elapsed=now - last_time,
+        )
         if delta_bytes != 0:
             had_activity = True
             last_change = now
@@ -1660,10 +1687,29 @@ def _monitor_directory_speed(
         size = _directory_size_bytes(monitor_path)
         now = time.monotonic()
         delta_bytes = size - last_size
-        speed = delta_bytes / max(now - last_time, 0.001)
-        status_callback(_format_speed_label(label, speed))
+        _emit_speed_update(
+            status_callback,
+            label,
+            delta_bytes=delta_bytes,
+            elapsed=now - last_time,
+        )
         last_size = size
         last_time = now
+
+
+def _emit_speed_update(
+    status_callback: Callable[[str], None] | None,
+    label: str,
+    *,
+    delta_bytes: int,
+    elapsed: float,
+) -> None:
+    if not status_callback:
+        return
+    if delta_bytes <= 0:
+        return
+    speed = delta_bytes / max(elapsed, 0.001)
+    status_callback(_format_speed_label(label, speed))
 
 
 def _start_speed_monitor(

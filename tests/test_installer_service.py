@@ -12,6 +12,7 @@ from services.installer import (
     InstallerService,
     OperationResult,
     WingetClient,
+    _emit_speed_update,
 )
 from allinone_it_config.app_registry import AppEntry
 
@@ -268,3 +269,17 @@ def test_local_install_finds_installer(tmp_path: Path) -> None:
 
     assert result.success is True
     assert "Local install" in result.message
+
+
+def test_emit_speed_update_ignores_zero_delta() -> None:
+    messages: list[str] = []
+    _emit_speed_update(messages.append, "Chrome", delta_bytes=0, elapsed=1.0)
+    assert messages == []
+
+
+def test_emit_speed_update_formats_speed_message() -> None:
+    messages: list[str] = []
+    _emit_speed_update(messages.append, "Chrome", delta_bytes=1024, elapsed=1.0)
+    assert len(messages) == 1
+    assert messages[0].startswith("Downloading Chrome:")
+    assert "/s" in messages[0]

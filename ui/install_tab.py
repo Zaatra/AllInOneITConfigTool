@@ -405,7 +405,7 @@ class InstallTab(QWidget):
             if app.name == "Office Deployment Tool":
                 odt_path = self._settings.odt_setup_path.strip()
                 odt_version = self._status_service.get_local_odt_version()
-                if odt_path and Path(odt_path).is_file():
+                if _file_exists(odt_path):
                     text = "Ready"
                 elif odt_version:
                     text = "Ready"
@@ -627,7 +627,10 @@ def _file_exists(path: str) -> bool:
     if not path:
         return False
     candidate = Path(path)
-    return candidate.exists() and candidate.is_file()
+    try:
+        return candidate.exists() and candidate.is_file()
+    except OSError:
+        return False
 
 
 def _format_elapsed(total_seconds: int) -> str:
